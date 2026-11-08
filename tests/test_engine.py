@@ -399,3 +399,48 @@ def test_release_keys_sends_key_up_for_untracked_keys() -> None:
     assert "key up e" in trace
     assert "mouse up left" in trace and "mouse up right" in trace
     assert backend.held_keys == set() and backend.held_buttons == set()
+
+
+def test_a_late_cash_reading_still_counts_as_a_successful_placement() -> None:
+    """The HUD publishes a value only once a majority of recent frames agree, so
+    the drop can land a few frames after the confirm delay. Treating that lag as
+    a failure would retry and place a second tower."""
+    state = FakeState(cash=1000)
+    runner, backend, clock, game, logs, _ = build(
+        [Place(slot=1, position=NormPoint(0.5, 0.5), tower_id="T1")],
+        state=state,
+        timing=Timing(jitter_ms=0, place_confirm_ms=100, place_verify_ms=2_000),
+    )
+    clicked_at: dict[str, int] = {}
+
+    def on_intent(intent) -> None:
+        if intent.kind == "mouse_up":
+            clicked_at["t"] = clock.value
+
+    def maybe_update(fake: FakeState) -> None:
+        # Cash only reflects the purchase a second after the click.
+        if "t" in clicked_at and clock.value - clicked_at["t"] >= 1_000:
+            fake.cash = 700
+
+    backend.on_intent = on_intent
+    game.on_snapshot = maybe_update
+    runner.start()
+    pump(runner, clock)
+
+    assert runner.placements_retried == 0, logs.text()
+    assert runner.placements_failed == 0
+    assert backend.trace().count("mouse up left") == 1, "the tower was placed twice"
+    assert runner.status is RunStatus.COMPLETED
+
+
+def test_placement_still_gives_up_when_the_drop_never_arrives() -> None:
+    runner, backend, clock, _, logs, _ = build(
+        [Place(slot=1, position=NormPoint(0.5, 0.5), tower_id="T1")],
+        state=FakeState(cash=500),
+        timing=Timing(jitter_ms=0, place_confirm_ms=100, place_verify_ms=500, place_retries=1),
+    )
+    runner.start()
+    pump(runner, clock)
+    assert runner.placements_retried == 1
+    assert runner.placements_failed == 1
+    assert backend.trace().count("mouse up left") == 2

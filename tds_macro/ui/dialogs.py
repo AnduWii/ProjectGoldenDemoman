@@ -239,6 +239,10 @@ class SettingsDialog(QDialog):
             ("place_confirm_ms", "Placement check delay", 0, 30_000,
              "How long to wait before checking whether cash dropped, which is how a "
              "failed placement is detected."),
+            ("place_verify_ms", "Placement check window", 0, 30_000,
+             "How long to keep watching for that drop. The HUD reader needs a few "
+             "frames to settle, and giving up too early makes the app retry and place "
+             "a second tower."),
             ("place_retries", "Placement retries", 0, 10,
              "Extra attempts when cash did not drop after a placement."),
             ("poll_interval_ms", "Condition poll interval", 10, 5_000,

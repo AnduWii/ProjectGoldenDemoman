@@ -140,6 +140,11 @@ class Timing:
     move_settle_ms: int = 60
     menu_open_ms: int = 220
     place_confirm_ms: int = 450
+    # How long to keep watching for the cash drop after that initial pause.
+    # The HUD reader needs a few frames to publish a new value, so a single
+    # read taken the instant the pause ends can still show the old figure --
+    # and reading "cash unchanged" means retrying, which places a second tower.
+    place_verify_ms: int = 1_500
     place_retries: int = 2
     poll_interval_ms: int = 100
     default_timeout_ms: int = 180_000
@@ -154,6 +159,7 @@ class Timing:
             move_settle_ms=max(0, min(self.move_settle_ms, 5_000)),
             menu_open_ms=max(0, min(self.menu_open_ms, 10_000)),
             place_confirm_ms=max(0, min(self.place_confirm_ms, 30_000)),
+            place_verify_ms=max(0, min(self.place_verify_ms, 30_000)),
             place_retries=max(0, min(self.place_retries, 10)),
             poll_interval_ms=max(10, min(self.poll_interval_ms, 5_000)),
             default_timeout_ms=max(0, self.default_timeout_ms),

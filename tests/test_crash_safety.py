@@ -134,9 +134,13 @@ def test_hotkey_manager_stop_is_safe_without_start() -> None:
 
 
 def test_sigint_shuts_down_cleanly(tmp_path: Path) -> None:
-    """Ctrl+C must go through the same teardown as a normal quit."""
+    """Ctrl+C must go through the same teardown as a normal quit.
+
+    Raised in-process with signal.raise_signal rather than os.kill: on Windows
+    os.kill(pid, SIGINT) terminates the process outright instead of running the
+    installed handler, so the test would prove nothing there.
+    """
     result = run_script(f"""
-        import os
         import signal
         from pathlib import Path
         from PySide6.QtCore import QTimer
@@ -154,7 +158,7 @@ def test_sigint_shuts_down_cleanly(tmp_path: Path) -> None:
             app.quit()
 
         signal.signal(signal.SIGINT, on_signal)
-        QTimer.singleShot(50, lambda: os.kill(os.getpid(), signal.SIGINT))
+        QTimer.singleShot(50, lambda: signal.raise_signal(signal.SIGINT))
         # Qt only notices a signal when the loop wakes, so keep it ticking.
         waker = QTimer()
         waker.timeout.connect(lambda: None)

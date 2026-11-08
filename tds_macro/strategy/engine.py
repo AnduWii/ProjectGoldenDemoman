@@ -500,8 +500,7 @@ class StrategyRunner:
             yield from self._click_at(step.position)
             yield Sleep(self.timing.place_confirm_ms)
 
-            after = self._cash()
-            if before is None or after is None:
+            if before is None or self._cash() is None:
                 self.deps.log(
                     "warn",
                     f"Placed {step.tower_id} but could not verify it: cash is unreadable. "
@@ -509,18 +508,37 @@ class StrategyRunner:
                 )
                 self._tower_positions[step.tower_id] = step.position
                 return
-            if after < before:
+
+            # Keep watching for the drop rather than sampling once. The HUD
+            # reader only publishes a value once a majority of recent frames
+            # agree on it, so the new figure can arrive a few frames late --
+            # and treating that lag as a failed placement would retry and place
+            # a second tower, which costs real cash and can block the spot.
+            # A named function rather than a closure over `before`, which is
+            # rebound on each retry: a late-evaluated closure would compare
+            # against the wrong attempt's figure.
+            def dropped_below(state: GameState, threshold: int = before) -> bool:
+                return state.cash is not None and state.cash < threshold
+
+            confirmed = yield AwaitState(
+                predicate=dropped_below,
+                description=f"cash to drop below ${before:,}",
+                timeout_ms=self.timing.place_verify_ms,
+            )
+            if confirmed:
                 self._tower_positions[step.tower_id] = step.position
-                self.deps.log(
-                    "info", f"Placed {step.tower_id} (cash ${before:,} -> ${after:,})"
-                )
+                after = self._cash()
+                spent = f"${before:,} -> ${after:,}" if after is not None else "cash dropped"
+                self.deps.log("info", f"Placed {step.tower_id} ({spent})")
                 return
             if attempt < attempts:
                 self.placements_retried += 1
                 self.deps.log(
                     "warn",
                     f"Placement of {step.tower_id} did not go through "
-                    f"(cash unchanged at ${after:,}); retry {attempt}/{attempts - 1}",
+                    f"(cash still ${before:,} after "
+                    f"{(self.timing.place_confirm_ms + self.timing.place_verify_ms) / 1000:.1f}s); "
+                    f"retry {attempt}/{attempts - 1}",
                 )
                 yield Sleep(self._jitter(self.timing.action_delay_ms * 2))
 
