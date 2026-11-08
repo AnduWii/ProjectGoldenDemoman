@@ -7,6 +7,8 @@ indication why.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -26,8 +28,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import ActionBinding, Settings
+from ..input.coords import NormPoint
 from ..input.keys import KeyParseError, parse_hotkey, validate_keybind
 from .theme import ERROR, OK, TEXT_DIM
+
+# Supplied by the main window: capture the game window, let the user click a
+# menu button, and hand back its normalized position (or None if cancelled).
+PickPoint = Callable[[], NormPoint | None]
 
 ACTION_LABELS = {
     "upgrade": "Upgrade",
@@ -40,7 +47,12 @@ ACTION_LABELS = {
 class BindingRow(QWidget):
     """Edits one :class:`ActionBinding` -- a key, or a click on a menu button."""
 
-    def __init__(self, binding: ActionBinding, pick: object, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        binding: ActionBinding,
+        pick: PickPoint,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.binding = binding
         self._pick = pick
@@ -88,12 +100,11 @@ class BindingRow(QWidget):
         self._sync()
 
     def _on_pick(self) -> None:
-        if callable(self._pick):
-            point = self._pick()
-            if point is not None:
-                self.binding.point = point
-                self.binding.mode = "click"
-                self.mode.setCurrentIndex(1)
+        point = self._pick()
+        if point is not None:
+            self.binding.point = point
+            self.binding.mode = "click"
+            self.mode.setCurrentIndex(1)
         self._sync()
 
     def _sync(self) -> None:
@@ -118,7 +129,7 @@ class SettingsDialog(QDialog):
     """Edits a copy of :class:`Settings`; the caller commits on accept."""
 
     def __init__(
-        self, settings: Settings, pick_point: object, parent: QWidget | None = None
+        self, settings: Settings, pick_point: PickPoint, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("TDS Macro -- Settings")
