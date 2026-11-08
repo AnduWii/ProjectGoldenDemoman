@@ -241,34 +241,45 @@ def step_from_dict(data: dict[str, Any]) -> Step:
     except (KeyError, ValueError) as exc:
         raise StrategyError(f"unknown step kind: {data.get('kind')!r}") from exc
 
-    common = {"enabled": bool(data.get("enabled", True)), "note": str(data.get("note", ""))}
+    enabled = bool(data.get("enabled", True))
+    note = str(data.get("note", ""))
     try:
         if kind is StepKind.PLACE:
             return Place(
+                enabled=enabled,
+                note=note,
                 slot=int(data["slot"]),
                 position=NormPoint.from_dict(data["position"]),
                 tower_id=str(data.get("tower_id", "T1")),
                 tower_name=str(data.get("tower_name", "")),
-                **common,
             )
         if kind is StepKind.UPGRADE:
             return Upgrade(
-                tower_id=str(data["tower_id"]), times=int(data.get("times", 1)), **common
+                enabled=enabled,
+                note=note,
+                tower_id=str(data["tower_id"]),
+                times=int(data.get("times", 1)),
             )
         if kind is StepKind.SELL:
-            return Sell(tower_id=str(data["tower_id"]), **common)
+            return Sell(enabled=enabled, note=note, tower_id=str(data["tower_id"]))
         if kind is StepKind.ABILITY:
-            return Ability(tower_id=str(data["tower_id"]), **common)
+            return Ability(enabled=enabled, note=note, tower_id=str(data["tower_id"]))
         if kind is StepKind.SKIP_WAVE:
-            return SkipWave(times=int(data.get("times", 1)), **common)
+            return SkipWave(enabled=enabled, note=note, times=int(data.get("times", 1)))
         if kind is StepKind.WAIT:
-            return Wait(ms=int(data["ms"]), **common)
+            return Wait(enabled=enabled, note=note, ms=int(data["ms"]))
         if kind is StepKind.WAIT_FOR_WAVE:
             return WaitForWave(
-                wave=int(data["wave"]), timeout_ms=int(data.get("timeout_ms", 0)), **common
+                enabled=enabled,
+                note=note,
+                wave=int(data["wave"]),
+                timeout_ms=int(data.get("timeout_ms", 0)),
             )
         return WaitForCash(
-            amount=int(data["amount"]), timeout_ms=int(data.get("timeout_ms", 0)), **common
+            enabled=enabled,
+            note=note,
+            amount=int(data["amount"]),
+            timeout_ms=int(data.get("timeout_ms", 0)),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise StrategyError(f"malformed {kind.value} step: {exc}") from exc

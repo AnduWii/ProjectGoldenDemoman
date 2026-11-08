@@ -127,7 +127,11 @@ class StepEditor(QWidget):
         box.setSuffix(suffix)
         if tooltip:
             box.setToolTip(tooltip)
-        box.valueChanged.connect(lambda v: (setter(int(v)), self._emit()))
+        def on_change(value: int) -> None:
+            setter(int(value))
+            self._emit()
+
+        box.valueChanged.connect(on_change)
         return box
 
     def _build_common(self) -> None:
@@ -191,9 +195,12 @@ class StepEditor(QWidget):
             self._emit()
 
         combo.currentIndexChanged.connect(on_change)
-        combo.editTextChanged.connect(
-            lambda text: (setattr(step, "tower_id", text.strip().split(" ")[0]), self._emit())
-        )
+        def on_typed(text: str) -> None:
+            # The combo shows "T1 (Farm)" but the id is just the first token.
+            step.tower_id = text.strip().split(" ")[0]
+            self._emit()
+
+        combo.editTextChanged.connect(on_typed)
         return combo
 
     def _timeout_row(self, step: WaitForWave | WaitForCash) -> QSpinBox:
@@ -229,16 +236,20 @@ class StepEditor(QWidget):
             tower_id.setToolTip(
                 "Name used by later Upgrade/Sell/Ability steps to refer to this tower."
             )
-            tower_id.textEdited.connect(
-                lambda text: (setattr(step, "tower_id", text.strip()), self._emit())
-            )
+            def set_tower_id(text: str, target: Place = step) -> None:
+                target.tower_id = text.strip()
+                self._emit()
+
+            tower_id.textEdited.connect(set_tower_id)
             self.form.addRow("Tower id", tower_id)
 
             name = QLineEdit(step.tower_name)
             name.setPlaceholderText("e.g. Farm, Scout -- for your own readability")
-            name.textEdited.connect(
-                lambda text: (setattr(step, "tower_name", text), self._emit())
-            )
+            def set_tower_name(text: str, target: Place = step) -> None:
+                target.tower_name = text
+                self._emit()
+
+            name.textEdited.connect(set_tower_name)
             self.form.addRow("Tower name", name)
 
             self.position_label = QLabel(
@@ -293,9 +304,11 @@ class StepEditor(QWidget):
                 "A fixed pause. Prefer 'Wait for wave' or 'Wait for cash' where you "
                 "can -- those adapt when the game runs faster or slower."
             )
-            seconds.valueChanged.connect(
-                lambda v: (setattr(step, "ms", int(v * 1000)), self._emit())
-            )
+            def set_duration(value: float, target: Wait = step) -> None:
+                target.ms = int(value * 1000)
+                self._emit()
+
+            seconds.valueChanged.connect(set_duration)
             self.form.addRow("Duration", seconds)
         elif isinstance(step, WaitForWave):
             self.form.addRow(

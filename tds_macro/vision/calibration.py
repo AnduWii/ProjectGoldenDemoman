@@ -134,7 +134,9 @@ class Calibration:
             for label, examples in region.classifier.templates.items():
                 for index, example in enumerate(examples):
                     arrays[f"{label}\x1f{index}"] = example
-            np.savez_compressed(folder / f"digits_{name}.npz", **arrays)
+            # The numpy stub types the second positional parameter as a bool,
+            # so the keyword splat trips it even though the call is correct.
+            np.savez_compressed(folder / f"digits_{name}.npz", **arrays)  # type: ignore[arg-type]
 
         template_dir = folder / "templates"
         template_dir.mkdir(exist_ok=True)

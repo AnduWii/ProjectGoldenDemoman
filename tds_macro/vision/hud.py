@@ -20,6 +20,8 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from ..input.coords import Rect
 from ..input.window import GeometryProvider
 from ..strategy.engine import GameState
@@ -194,7 +196,11 @@ class HudReader:
         return snapshot
 
     def _read_region(
-        self, region: HudRegion, frame, name: str, snapshot: HudSnapshot
+        self,
+        region: HudRegion,
+        frame: np.ndarray,
+        name: str,
+        snapshot: HudSnapshot,
     ) -> ReadResult:
         if region.box is None:
             snapshot.problems.append(f"{name} region is not calibrated")
@@ -204,7 +210,7 @@ class HudReader:
             snapshot.problems.append(f"{name}: {result.reason}")
         return result
 
-    def grab_client_frame(self) -> tuple[Rect | None, object]:
+    def grab_client_frame(self) -> tuple[Rect | None, np.ndarray | None]:
         """Full client-area capture, for the calibration wizard and previews."""
         client = self.geometry.client_rect()
         if client is None:

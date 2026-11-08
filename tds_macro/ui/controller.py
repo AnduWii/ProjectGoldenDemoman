@@ -13,6 +13,7 @@ thread, which SendInput prefers.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -157,7 +158,7 @@ class AppController(QObject):
             self.emit_log("info", f"Hotkey ready -- {binding.status()}")
         return problems
 
-    def _make_hotkey_emitter(self, name: str):
+    def _make_hotkey_emitter(self, name: str) -> Callable[[], None]:
         def emit() -> None:
             # Crosses from the hotkey thread to the GUI thread via Qt's queued
             # connection; never touch widgets from here.

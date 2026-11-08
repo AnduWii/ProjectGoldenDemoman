@@ -18,7 +18,7 @@ existing placement points at once.
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -166,7 +166,7 @@ class PickerCanvas(QWidget):
             self.picked.emit(box)
         self.update()
 
-    def leaveEvent(self, event) -> None:  # noqa: ANN001
+    def leaveEvent(self, event: QEvent) -> None:
         del event
         self._cursor = None
         self.hovered.emit(None)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -397,10 +397,9 @@ class MainWindow(QMainWindow):
         row = self.editor.row
         self.controller.dirty = True
         self.model.step_changed(row)
-        self.editor.hint.setText(
-            "  |  ".join(f"Problem: {p}" for p in self.model.problems_for(row))
-            or (self.model.step_at(row).describe() if self.model.step_at(row) else "")
-        )
+        step = self.model.step_at(row)
+        problems = "  |  ".join(f"Problem: {p}" for p in self.model.problems_for(row))
+        self.editor.hint.setText(problems or (step.describe() if step is not None else ""))
         self._refresh_summary()
 
     def _add_step(self) -> None:
@@ -620,7 +619,7 @@ class MainWindow(QMainWindow):
             self.controller.save_settings()
 
     # -- shutdown ---------------------------------------------------------------
-    def closeEvent(self, event) -> None:  # noqa: ANN001
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self.controller.busy:
             answer = QMessageBox.question(
                 self,

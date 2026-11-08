@@ -26,6 +26,10 @@ ignore = ["B008", "SIM108"]
 
 [tool.mypy]
 python_version = "3.12"
+# This is a Windows application. Without this, typeshed hides the Windows-only
+# ctypes attributes (windll, WINFUNCTYPE, get_last_error) that the input layer
+# calls behind its own platform guards, and CI on Linux reports them as errors.
+platform = "win32"
 warn_unused_ignores = false
 warn_redundant_casts = true
 disallow_untyped_defs = true
@@ -35,3 +39,13 @@ exclude = "build/"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[[tool.mypy.overrides]]
+# The package is checked strictly. Tests are not: narrowing every `Step` in a
+# helper or annotating every fixture catches nothing that pytest does not
+# already catch by running the code, and the noise hides real findings.
+# Both spellings: with no tests/__init__.py, mypy sees these as top-level
+# modules when the folder is passed on the command line.
+module = ["tests.*", "test_*", "conftest"]
+ignore_errors = true
+disallow_untyped_defs = false

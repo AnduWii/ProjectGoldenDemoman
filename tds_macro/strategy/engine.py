@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -100,7 +100,10 @@ class AwaitState:
 
 
 Command = Sleep | Do | AwaitState
-Program = Iterator[Command]
+# Values are sent *into* these generators (an AwaitState resumes with
+# satisfied/timed-out), so Iterator is not a strong enough type: .send() and
+# .close() are both part of the contract.
+Program = Generator[Command, object, None]
 
 
 class RunStatus(Enum):

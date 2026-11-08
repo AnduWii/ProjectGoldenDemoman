@@ -8,10 +8,17 @@ drops the step objects and rebuilds them from display strings.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace as dataclass_replace
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, Qt
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QMimeData,
+    QModelIndex,
+    QPersistentModelIndex,
+    Qt,
+)
 from PySide6.QtGui import QColor, QFont
 
 from ..strategy.steps import Place, Step, Strategy
@@ -54,12 +61,16 @@ class StepListModel(QAbstractListModel):
         return None
 
     # -- QAbstractListModel ---------------------------------------------------
-    def rowCount(self, parent: QModelIndex | None = None) -> int:
+    def rowCount(self, parent: QModelIndex | QPersistentModelIndex | None = None) -> int:
         if parent is not None and parent.isValid():
             return 0
         return len(self._strategy.steps)
 
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
         if not index.isValid():
             return None
         row = index.row()
@@ -96,7 +107,7 @@ class StepListModel(QAbstractListModel):
             return font
         return None
 
-    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+    def flags(self, index: QModelIndex | QPersistentModelIndex) -> Qt.ItemFlag:
         base = (
             Qt.ItemFlag.ItemIsEnabled
             | Qt.ItemFlag.ItemIsSelectable
@@ -114,7 +125,7 @@ class StepListModel(QAbstractListModel):
     def mimeTypes(self) -> list[str]:
         return [MIME_TYPE]
 
-    def mimeData(self, indexes: list[QModelIndex]) -> QMimeData:
+    def mimeData(self, indexes: Sequence[QModelIndex]) -> QMimeData:
         rows = sorted({i.row() for i in indexes if i.isValid()})
         payload = QMimeData()
         payload.setData(MIME_TYPE, ",".join(str(r) for r in rows).encode("ascii"))
@@ -126,7 +137,7 @@ class StepListModel(QAbstractListModel):
         action: Qt.DropAction,
         row: int,
         column: int,
-        parent: QModelIndex,
+        parent: QModelIndex | QPersistentModelIndex,
     ) -> bool:
         del action, row, column, parent
         return data.hasFormat(MIME_TYPE)
@@ -137,7 +148,7 @@ class StepListModel(QAbstractListModel):
         action: Qt.DropAction,
         row: int,
         column: int,
-        parent: QModelIndex,
+        parent: QModelIndex | QPersistentModelIndex,
     ) -> bool:
         del column
         if action == Qt.DropAction.IgnoreAction:
@@ -145,7 +156,8 @@ class StepListModel(QAbstractListModel):
         if not data.hasFormat(MIME_TYPE):
             return False
         try:
-            rows = [int(part) for part in bytes(data.data(MIME_TYPE)).decode("ascii").split(",")]
+            encoded = bytes(data.data(MIME_TYPE).data()).decode("ascii")
+            rows = [int(part) for part in encoded.split(",")]
         except ValueError:
             return False
         target = row if row >= 0 else (parent.row() if parent.isValid() else self.rowCount())
