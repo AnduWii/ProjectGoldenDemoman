@@ -74,6 +74,7 @@ class AppController(QObject):
         self.recorder: Recorder | None = None
         self.runner: StrategyRunner | None = None
         self.loop: LoopController | None = None
+        self._shut_down = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(TICK_MS)
@@ -461,7 +462,15 @@ class AppController(QObject):
 
     # -- shutdown ----------------------------------------------------------------
     def shutdown(self) -> None:
-        """Release every OS resource.  Called from aboutToQuit and atexit."""
+        """Release every OS resource.
+
+        Reached from several directions on purpose -- ``aboutToQuit``,
+        ``atexit``, the signal handler and the exception hook -- so it has to be
+        idempotent rather than run its teardown three times over.
+        """
+        if self._shut_down:
+            return
+        self._shut_down = True
         try:
             self.stop_playback("application closing")
         finally:

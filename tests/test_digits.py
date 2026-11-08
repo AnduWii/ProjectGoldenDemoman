@@ -230,3 +230,58 @@ def test_templates_match_regardless_of_how_they_were_cropped() -> None:
     tight = glyph_mask("8", SCALE)[:20, :12]
     label, score = classifier.classify(tight)
     assert label == "8" and score > 0.9
+
+
+# --- calibration by typed readout ------------------------------------------------
+def test_learning_from_typed_text_teaches_every_glyph() -> None:
+    from tds_macro.vision.digits import learn_from_text, missing_digits
+
+    classifier = DigitClassifier()
+    outcome = learn_from_text(render("$1,250"), "$1,250", classifier)
+    assert outcome.ok and outcome.added == 6
+    assert read_number(render("521"), classifier).value == 521
+    assert missing_digits(classifier) == ["3", "4", "6", "7", "8", "9"]
+
+
+def test_learning_tolerates_spaces_in_what_the_user_typed() -> None:
+    from tds_macro.vision.digits import learn_from_text
+
+    classifier = DigitClassifier()
+    assert learn_from_text(render("42"), " 4 2 ", classifier).ok
+
+
+def test_count_mismatch_is_refused_rather_than_guessed() -> None:
+    """Pairing the wrong characters onto glyphs would poison every later read."""
+    from tds_macro.vision.digits import learn_from_text
+
+    classifier = DigitClassifier()
+    outcome = learn_from_text(render("123"), "12", classifier)
+    assert not outcome.ok
+    assert "found 3 character(s)" in outcome.error
+    assert classifier.templates == {}
+
+
+def test_empty_input_and_empty_region_are_reported() -> None:
+    from tds_macro.vision.digits import learn_from_text
+
+    classifier = DigitClassifier()
+    assert "type what the readout" in learn_from_text(render("1"), "  ", classifier).error
+    blank = np.full((30, 60, 4), 20, dtype=np.uint8)
+    assert "no characters were found" in learn_from_text(blank, "1", classifier).error
+
+
+def test_learning_accumulates_across_several_captures() -> None:
+    from tds_macro.vision.digits import learn_from_text, missing_digits
+
+    classifier = DigitClassifier()
+    learn_from_text(render("1234"), "1234", classifier)
+    learn_from_text(render("5678"), "5678", classifier)
+    learn_from_text(render("90"), "90", classifier)
+    assert missing_digits(classifier) == []
+    assert read_number(render("9081726354"), classifier).value == 9081726354
+
+
+def test_glyph_previews_match_the_character_count() -> None:
+    from tds_macro.vision.digits import glyph_previews
+
+    assert len(glyph_previews(render("$1,250"))) == 6

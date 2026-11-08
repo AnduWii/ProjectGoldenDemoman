@@ -327,3 +327,86 @@ def read_number(
     if not digits:
         return ReadResult(None, text, worst, glyphs=len(boxes), reason="no digits recognised")
     return ReadResult(int(digits), text, worst, glyphs=len(boxes))
+
+
+@dataclass(frozen=True)
+class LearnOutcome:
+    """Result of teaching the classifier from a typed readout."""
+
+    added: int
+    glyphs: int
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+def learn_from_text(
+    image: np.ndarray,
+    text: str,
+    classifier: DigitClassifier,
+    invert: bool | None = None,
+    min_glyph_width: int = 1,
+) -> LearnOutcome:
+    """Teach glyphs by pairing a captured region with what the user says it reads.
+
+    This is the whole calibration interaction: rather than asking someone to
+    label a dozen anonymous glyph bitmaps, they type what is on screen ("12",
+    "$1,250") and the characters are zipped onto the segmented glyphs in order.
+
+    A count mismatch is reported instead of guessed at -- silently pairing five
+    characters onto six glyphs would poison every later reading, and a poisoned
+    classifier is far worse than an uncalibrated one.
+    """
+    cleaned = "".join(text.split())
+    if not cleaned:
+        return LearnOutcome(0, 0, error="type what the readout currently shows first")
+    if image.size == 0:
+        return LearnOutcome(0, 0, error="the captured region is empty")
+
+    mask = binarize(to_gray(image), invert=invert)
+    boxes = segment_glyphs(mask, min_width=min_glyph_width)
+    if not boxes:
+        return LearnOutcome(
+            0,
+            0,
+            error=(
+                "no characters were found in that region -- redraw the box tightly "
+                "around just the number"
+            ),
+        )
+    if len(boxes) != len(cleaned):
+        return LearnOutcome(
+            0,
+            len(boxes),
+            error=(
+                f"found {len(boxes)} character(s) in the region but you typed "
+                f"{len(cleaned)} ({cleaned!r}). Redraw the box around only the "
+                "number, or correct what you typed."
+            ),
+        )
+
+    for character, box in zip(cleaned, boxes, strict=True):
+        classifier.add(character, crop_glyph(mask, box))
+    return LearnOutcome(len(cleaned), len(boxes))
+
+
+def missing_digits(classifier: DigitClassifier) -> list[str]:
+    """Digits 0-9 the classifier has never seen.
+
+    Shown in the wizard so the user knows to keep playing until the HUD has
+    displayed every digit, rather than discovering a gap mid-run.
+    """
+    known = set(classifier.templates)
+    return [digit for digit in "0123456789" if digit not in known]
+
+
+def glyph_previews(
+    image: np.ndarray, invert: bool | None = None, min_glyph_width: int = 1
+) -> list[np.ndarray]:
+    """Segmented glyph masks, for showing the user what was detected."""
+    if image.size == 0:
+        return []
+    mask = binarize(to_gray(image), invert=invert)
+    return [crop_glyph(mask, box) for box in segment_glyphs(mask, min_width=min_glyph_width)]
