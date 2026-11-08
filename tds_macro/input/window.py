@@ -20,6 +20,7 @@ from typing import Protocol
 
 from .coords import Rect, VirtualScreen, client_rect_from_window
 from .win32_defs import (
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     IS_WINDOWS,
     POINT,
     PROCESS_PER_MONITOR_DPI_AWARE,
@@ -28,7 +29,6 @@ from .win32_defs import (
     SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN,
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     kernel32,
     shcore,
     user32,
@@ -138,9 +138,12 @@ def set_dpi_awareness() -> str:
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
             ):
                 return "per-monitor DPI aware v2"
-        if shcore is not None and hasattr(shcore, "SetProcessDpiAwareness"):
-            if shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) == 0:
-                return "per-monitor DPI aware v1 (v2 unavailable)"
+        if (
+            shcore is not None
+            and hasattr(shcore, "SetProcessDpiAwareness")
+            and shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) == 0
+        ):
+            return "per-monitor DPI aware v1 (v2 unavailable)"
         if hasattr(user32, "SetProcessDPIAware") and user32.SetProcessDPIAware():
             return "system DPI aware only (per-monitor unavailable)"
     except OSError as exc:  # pragma: no cover - Windows only

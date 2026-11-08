@@ -137,8 +137,13 @@ def _clamp(value: int, low: int, high: int) -> int:
 def norm_to_screen(point: NormPoint, client: Rect) -> tuple[int, int]:
     """Map a normalized client point to a physical screen pixel.
 
-    The point is placed at the *centre* of its pixel band so that a
-    normalized 0.5 on an even-width window does not systematically bias left.
+    Convention: a normalized value is the *leading edge* of its pixel band and
+    this function floors, which makes it an exact inverse of
+    :func:`screen_to_norm` on the same rectangle -- so picking a point, seeing
+    it in the preview, and replaying it all land on the identical pixel.  (An
+    earlier half-pixel centring here drifted by a whole pixel when a macro
+    recorded at 1280 wide was replayed at 2560.)
+
     Raises :class:`ValueError` on a degenerate client rect, which is what you
     get when the Roblox window is minimized -- callers must treat that as
     "window not ready", never as a click at (0, 0).
@@ -155,12 +160,12 @@ def norm_to_screen(point: NormPoint, client: Rect) -> tuple[int, int]:
 
 
 def screen_to_norm(x: int, y: int, client: Rect) -> NormPoint:
-    """Inverse of :func:`norm_to_screen` (to within one pixel)."""
+    """Exact inverse of :func:`norm_to_screen` on the same rectangle."""
     if not client.is_valid():
         raise ValueError(f"client rect has no area: {client.as_tuple()}")
     return NormPoint(
-        (x - client.left + 0.5) / client.width,
-        (y - client.top + 0.5) / client.height,
+        (x - client.left) / client.width,
+        (y - client.top) / client.height,
     )
 
 

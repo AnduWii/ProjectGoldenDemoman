@@ -75,9 +75,8 @@ class RawInputTap:
         self.geometry = geometry
         self.only_when_foreground = only_when_foreground
         self.error: str = ""
-        self._queue: queue.Queue[tuple[int, RawKind, int | None, str | None, tuple[int, int] | None]] = (
-            queue.Queue(maxsize=4096)
-        )
+        QueuedEvent = tuple[int, RawKind, int | None, str | None, tuple[int, int] | None]
+        self._queue: queue.Queue[QueuedEvent] = queue.Queue(maxsize=4096)
         self._thread: threading.Thread | None = None
         self._thread_id = 0
         self._ready = threading.Event()
