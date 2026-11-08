@@ -9,7 +9,7 @@ from conftest import FakeClock, FakeFocus, FakeState, LogCapture, pump
 
 from tds_macro.config import ActionBinding, Keybinds, Timing
 from tds_macro.input.coords import NormPoint
-from tds_macro.input.sendinput import NullBackend
+from tds_macro.input.sendinput import MouseButton, NullBackend
 from tds_macro.strategy.engine import RunnerDeps, RunStatus, StrategyRunner
 from tds_macro.strategy.steps import (
     Ability,
@@ -384,3 +384,18 @@ def test_missing_keybind_reports_where_to_fix_it() -> None:
     pump(runner, clock)
     assert backend.intents == []
     assert any("Settings > Keybinds" in m for m in logs.messages("error"))
+
+
+# --- panic release --------------------------------------------------------------
+def test_release_keys_sends_key_up_for_untracked_keys() -> None:
+    """After a crash the held-key set can be lost while the key is still down,
+    so the panic path sends key-up regardless of what it thinks is held."""
+    backend = NullBackend()
+    backend.key_down("3")
+    backend.held_keys.clear()  # bookkeeping lost
+    backend.release_keys(["3", "e"], [MouseButton.LEFT, MouseButton.RIGHT])
+    trace = backend.trace()
+    assert trace.count("key up 3") == 1
+    assert "key up e" in trace
+    assert "mouse up left" in trace and "mouse up right" in trace
+    assert backend.held_keys == set() and backend.held_buttons == set()

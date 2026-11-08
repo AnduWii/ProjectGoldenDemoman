@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -102,6 +102,10 @@ class InputBackend(Protocol):
 
     def release_all(self) -> None: ...
 
+    def release_keys(
+        self, keys: Iterable[str], buttons: Iterable[MouseButton] = ()
+    ) -> None: ...
+
     def last_error(self) -> str: ...
 
 
@@ -157,6 +161,16 @@ class NullBackend:
         for button in list(self.held_buttons):
             self._record(InputIntent("mouse_up", button=button))
         self.held_buttons.clear()
+
+    def release_keys(
+        self, keys: Iterable[str], buttons: Iterable[MouseButton] = ()
+    ) -> None:
+        for key in keys:
+            self.held_keys.discard(key)
+            self._record(InputIntent("key_up", key=key))
+        for button in buttons:
+            self.held_buttons.discard(button)
+            self._record(InputIntent("mouse_up", button=button))
 
     def last_error(self) -> str:
         return ""
@@ -322,5 +336,28 @@ class Win32Backend:
             for button in list(self.held_buttons):
                 self._mouse_button(button, False)
             self.held_buttons.clear()
+        finally:
+            self.require_foreground = previous
+
+    def release_keys(
+        self, keys: Iterable[str], buttons: Iterable[MouseButton] = ()
+    ) -> None:
+        """Send key-up for ``keys`` whether or not we think they are held.
+
+        After a crash the set of tracked keys can be gone while the physical key
+        is still down as far as Windows is concerned, and a key-up for a key that
+        is already up is harmless. So the panic path sends them unconditionally
+        rather than trusting its own bookkeeping, and ignores the foreground gate
+        for the same reason ``release_all`` does.
+        """
+        previous = self.require_foreground
+        self.require_foreground = False
+        try:
+            for key in keys:
+                self._key_event(key, False)
+                self.held_keys.discard(key)
+            for button in buttons:
+                self._mouse_button(button, False)
+                self.held_buttons.discard(button)
         finally:
             self.require_foreground = previous

@@ -23,8 +23,8 @@ from ..config import Settings, SettingsStore
 from ..input.coords import NormPoint, Rect
 from ..input.hooks import RawInputTap
 from ..input.hotkeys import HotkeyManager
-from ..input.sendinput import InputBackend, NullBackend, Win32Backend
-from ..input.window import RobloxWindow, set_dpi_awareness
+from ..input.sendinput import InputBackend, MouseButton, NullBackend, Win32Backend
+from ..input.window import RobloxWindow, query_dpi_awareness, set_dpi_awareness
 from ..strategy.engine import GameState, RunnerDeps, RunStatus, StrategyRunner
 from ..strategy.loop import LoopController, LoopDeps, LoopPhase
 from ..strategy.recorder import Recorder, RecorderOptions
@@ -53,7 +53,10 @@ class AppController(QObject):
 
     def __init__(self, store: SettingsStore | None = None) -> None:
         super().__init__()
+        # main() sets this before Qt loads; calling again is a no-op that returns
+        # the cached answer, and query_dpi_awareness() confirms it from Windows.
         self.dpi_mode = set_dpi_awareness()
+        self.dpi_actual = query_dpi_awareness()
         self.store = store or SettingsStore()
         self.settings: Settings = self.store.load()
         self.strategy = Strategy()
@@ -75,6 +78,7 @@ class AppController(QObject):
         self.recorder: Recorder | None = None
         self.runner: StrategyRunner | None = None
         self.loop: LoopController | None = None
+        self.backend: InputBackend | None = None
         self._shut_down = False
 
         self._timer = QTimer(self)
@@ -88,7 +92,7 @@ class AppController(QObject):
         self._load_calibration()
         if self.store.load_error:
             self.emit_log("error", self.store.load_error)
-        self.emit_log("info", f"DPI mode: {self.dpi_mode}")
+        self.emit_log("info", f"DPI mode: {self.dpi_mode} (process reports: {self.dpi_actual})")
         if not self.store.portable:
             self.emit_log(
                 "warn",
@@ -185,14 +189,38 @@ class AppController(QObject):
 
     # -- backends ---------------------------------------------------------------
     def make_backend(self, dry_run: bool | None = None) -> InputBackend:
+        """Build an input backend and remember it.
+
+        The reference matters: the emergency stop has to release the backend the
+        run is actually using, not a fresh one whose bookkeeping is empty.
+        """
         dry = self.settings.dry_run if dry_run is None else dry_run
         if dry:
-            return NullBackend(on_intent=lambda i: self.emit_log("step", f"would {i.describe()}"))
-        return Win32Backend(
-            self.window,
-            use_scancodes=self.settings.use_scancodes,
-            require_foreground=self.settings.require_foreground,
-        )
+            backend: InputBackend = NullBackend(
+                on_intent=lambda i: self.emit_log("step", f"would {i.describe()}")
+            )
+        else:
+            backend = Win32Backend(
+                self.window,
+                use_scancodes=self.settings.use_scancodes,
+                require_foreground=self.settings.require_foreground,
+            )
+        self.backend = backend
+        return backend
+
+    def panic_keys(self) -> list[str]:
+        """Every key the app could conceivably be holding.
+
+        Built from the configured keybinds rather than from what we think is
+        held, because the panic path must work even when that bookkeeping was
+        lost -- which is exactly the case after a crash.
+        """
+        keybinds = self.settings.keybinds
+        keys = [key for key in keybinds.slots if key]
+        for binding in (keybinds.upgrade, keybinds.sell, keybinds.ability, keybinds.skip_wave):
+            if binding.mode == "key" and binding.key:
+                keys.append(binding.key)
+        return sorted(set(keys))
 
     def _make_runner(self, backend: InputBackend) -> StrategyRunner:
         return StrategyRunner(
@@ -308,11 +336,16 @@ class AppController(QObject):
         if self.recorder is not None:
             self.stop_recording(save=False)
         self.stop_playback("emergency stop")
-        # Belt and braces: release through a backend even if nothing was running.
         try:
-            self.make_backend(dry_run=False).release_all()
+            backend = self.backend
+            if backend is not None:
+                backend.release_all()
+                # Then send key-up for every configured key regardless of what
+                # we believe is held: a crash can lose that bookkeeping while
+                # the key is still down, and a redundant key-up costs nothing.
+                backend.release_keys(self.panic_keys(), list(MouseButton))
         except Exception:  # pragma: no cover - defensive
-            log.exception("release_all failed during emergency stop")
+            log.exception("releasing input failed during emergency stop")
         self.statusChanged.emit("Emergency stop -- all input released")
 
     def _finish(self) -> None:

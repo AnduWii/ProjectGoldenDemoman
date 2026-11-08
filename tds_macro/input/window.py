@@ -46,6 +46,22 @@ ROBLOX_TITLE_HINT = "roblox"
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
+# DPI awareness can only be set once per process; later calls fail. The result
+# is cached so that a second caller is told what the process actually is, rather
+# than that setting it "failed" -- which is what the About dialog and the
+# troubleshooting steps read.
+_dpi_mode: str | None = None
+
+DPI_AWARENESS_UNAWARE = 0
+DPI_AWARENESS_SYSTEM_AWARE = 1
+DPI_AWARENESS_PER_MONITOR_AWARE = 2
+
+_AWARENESS_NAMES = {
+    DPI_AWARENESS_UNAWARE: "DPI unaware",
+    DPI_AWARENESS_SYSTEM_AWARE: "system DPI aware",
+    DPI_AWARENESS_PER_MONITOR_AWARE: "per-monitor DPI aware",
+}
+
 
 @dataclass(frozen=True)
 class WindowInfo:
@@ -118,6 +134,29 @@ def choose_best_candidate(windows: list[WindowInfo], minimum_score: int = 40) ->
 
 
 # --- Win32-backed implementation ---------------------------------------------
+def query_dpi_awareness() -> str:
+    """Describe the awareness the process actually has, as Windows sees it.
+
+    Used to report the truth rather than the return value of a setter that
+    legitimately fails the second time it is called.
+    """
+    if not IS_WINDOWS or user32 is None:
+        return "not Windows; DPI awareness not applicable"
+    try:
+        if hasattr(user32, "GetThreadDpiAwarenessContext") and hasattr(
+            user32, "GetAwarenessFromDpiAwarenessContext"
+        ):
+            user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+            user32.GetAwarenessFromDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
+            user32.GetAwarenessFromDpiAwarenessContext.restype = ctypes.c_int
+            context = user32.GetThreadDpiAwarenessContext()
+            awareness = int(user32.GetAwarenessFromDpiAwarenessContext(context))
+            return _AWARENESS_NAMES.get(awareness, f"unknown DPI awareness ({awareness})")
+    except OSError as exc:  # pragma: no cover - Windows only
+        log.warning("could not read DPI awareness: %s", exc)
+    return "DPI awareness unknown"
+
+
 def set_dpi_awareness() -> str:
     """Opt into per-monitor DPI awareness v2 as early as possible.
 
@@ -126,10 +165,17 @@ def set_dpi_awareness() -> str:
     scaled logical pixels while ``mss`` captures physical ones -- a mismatch
     that silently offsets every click on any display not at 100% scaling.
 
-    Returns a human-readable description of what was achieved, for the log.
+    Returns a human-readable description of what the process ended up with.
+    Awareness can only be set once, so the answer is cached: without that, a
+    second caller sees the setter fail and reports "could not be set" for a
+    process that is in fact correctly per-monitor aware.
     """
+    global _dpi_mode
+    if _dpi_mode is not None:
+        return _dpi_mode
     if not IS_WINDOWS:
-        return "not Windows; DPI awareness not applicable"
+        _dpi_mode = "not Windows; DPI awareness not applicable"
+        return _dpi_mode
     try:
         assert user32 is not None
         if hasattr(user32, "SetProcessDpiAwarenessContext"):
@@ -137,19 +183,26 @@ def set_dpi_awareness() -> str:
             if user32.SetProcessDpiAwarenessContext(
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
             ):
-                return "per-monitor DPI aware v2"
+                _dpi_mode = "per-monitor DPI aware v2"
+                return _dpi_mode
         if (
             shcore is not None
             and hasattr(shcore, "SetProcessDpiAwareness")
             and shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) == 0
         ):
-            return "per-monitor DPI aware v1 (v2 unavailable)"
+            _dpi_mode = "per-monitor DPI aware v1 (v2 unavailable)"
+            return _dpi_mode
         if hasattr(user32, "SetProcessDPIAware") and user32.SetProcessDPIAware():
-            return "system DPI aware only (per-monitor unavailable)"
+            _dpi_mode = "system DPI aware only (per-monitor unavailable)"
+            return _dpi_mode
     except OSError as exc:  # pragma: no cover - Windows only
         log.warning("could not set DPI awareness: %s", exc)
-        return f"DPI awareness failed: {exc}"
-    return "DPI awareness could not be set; coordinates may be scaled"
+        _dpi_mode = f"DPI awareness failed: {exc}"
+        return _dpi_mode
+    # Setting failed, which usually means it was already set (by an app manifest
+    # or an earlier call), so report what the process actually has.
+    _dpi_mode = f"already set: {query_dpi_awareness()}"
+    return _dpi_mode
 
 
 def _process_exe_name(pid: int) -> str:  # pragma: no cover - Windows only

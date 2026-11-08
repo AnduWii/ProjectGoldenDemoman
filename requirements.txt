@@ -1,10 +1,12 @@
 # Runtime dependencies.
-# Pinned to the versions this build was developed and tested against, with a
-# compatible lower bound so a slightly older wheel still resolves. Note that
-# pywin32 is Windows-only; everything else installs anywhere, which is what lets
-# the test suite run on Linux CI.
+#
+# Pinned with a compatible range rather than an exact version, so a slightly
+# older wheel still resolves. Everything here installs on any platform, which is
+# what lets the test suite run on Linux CI; the Windows-specific work is done
+# through ctypes, which is in the standard library.
+#
+# pywin32 is deliberately NOT a dependency: see "Stack notes" in README.md.
 PySide6>=6.8,<7
 mss>=9.0,<11
 numpy>=2.1,<3
 opencv-python-headless>=4.10,<6
-pywin32>=306 ; sys_platform == "win32"

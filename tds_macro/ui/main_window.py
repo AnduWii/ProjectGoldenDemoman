@@ -557,7 +557,10 @@ class MainWindow(QMainWindow):
 
     def _about(self) -> None:
         AboutDialog(
-            __version__, self.controller.dpi_mode, str(self.controller.store.path), self
+            __version__,
+            f"{self.controller.dpi_mode} (process reports: {self.controller.dpi_actual})",
+            str(self.controller.store.path),
+            self,
         ).exec()
 
     # -- strategy files ---------------------------------------------------------

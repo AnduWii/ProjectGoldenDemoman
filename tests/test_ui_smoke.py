@@ -200,3 +200,25 @@ def test_model_drag_reorder_moves_the_underlying_steps(qt_app: QApplication) -> 
 def test_emergency_stop_is_safe_when_nothing_is_running(controller: AppController) -> None:
     controller.emergency_stop()
     assert controller.busy is False
+
+
+def test_panic_key_set_covers_every_configured_keybind(controller: AppController) -> None:
+    controller.settings.keybinds.slots = ["1", "2", "3", "4", "5"]
+    keys = controller.panic_keys()
+    assert {"1", "2", "3", "4", "5"} <= set(keys)
+    # The default upgrade/sell/ability/skip bindings are keys, so they are in too.
+    assert "e" in keys and "x" in keys and "f" in keys and "g" in keys
+
+
+def test_emergency_stop_releases_the_backend_the_run_was_using(
+    controller: AppController,
+) -> None:
+    """It used to build a fresh backend, whose bookkeeping was empty, so it
+    released nothing at all."""
+    backend = controller.make_backend(dry_run=True)
+    backend.key_down("3")
+    backend.mouse_down()
+    controller.emergency_stop()
+    assert backend.held_keys == set()
+    assert backend.held_buttons == set()
+    assert "mouse up left" in backend.trace()
