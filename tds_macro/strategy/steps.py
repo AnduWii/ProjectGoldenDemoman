@@ -307,38 +307,49 @@ class Strategy:
         skipped that bit": referencing a tower before it is placed, acting on a
         tower that was already sold, and out-of-range hotbar slots.
         """
-        problems: list[str] = []
+        return [
+            f"Step {index + 1} ({self.steps[index].describe()}): {message}"
+            for index, message in self.problems_by_step()
+        ]
+
+    def problems_by_step(self) -> list[tuple[int, str]]:
+        """Problems as ``(zero-based step index, message)``.
+
+        The editor needs them per row so it can flag the offending step
+        directly rather than making the user map a sentence back to a row.
+        """
+        problems: list[tuple[int, str]] = []
         placed: set[str] = set()
         sold: set[str] = set()
 
-        for index, step in enumerate(self.steps, start=1):
-            label = f"Step {index} ({step.describe()})"
+        for position, step in enumerate(self.steps):
+            index = position
             if isinstance(step, Place):
                 if not MIN_SLOT <= step.slot <= MAX_SLOT:
                     problems.append(
-                        f"{label}: hotbar slot {step.slot} is outside {MIN_SLOT}-{MAX_SLOT}"
+                        (index, f"hotbar slot {step.slot} is outside {MIN_SLOT}-{MAX_SLOT}")
                     )
                 if step.tower_id in placed:
-                    problems.append(f"{label}: tower id {step.tower_id} is already in use")
+                    problems.append((index, f"tower id {step.tower_id} is already in use"))
                 if not step.position.is_inside():
-                    problems.append(f"{label}: position is outside the game window")
+                    problems.append((index, "position is outside the game window"))
                 placed.add(step.tower_id)
                 sold.discard(step.tower_id)
             elif isinstance(step, TowerRefStep):
                 if step.tower_id not in placed:
                     problems.append(
-                        f"{label}: {step.tower_id} is never placed before this point"
+                        (index, f"{step.tower_id} is never placed before this point")
                     )
                 elif step.tower_id in sold:
-                    problems.append(f"{label}: {step.tower_id} was already sold")
+                    problems.append((index, f"{step.tower_id} was already sold"))
                 if isinstance(step, Sell):
                     sold.add(step.tower_id)
             elif isinstance(step, Wait) and step.ms < 0:
-                problems.append(f"{label}: negative wait")
+                problems.append((index, "negative wait"))
             elif isinstance(step, WaitForWave) and step.wave < 1:
-                problems.append(f"{label}: wave numbers start at 1")
+                problems.append((index, "wave numbers start at 1"))
             elif isinstance(step, WaitForCash) and step.amount < 0:
-                problems.append(f"{label}: negative cash target")
+                problems.append((index, "negative cash target"))
         return problems
 
     def estimated_ms(self) -> int:

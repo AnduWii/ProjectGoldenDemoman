@@ -130,7 +130,7 @@ class RunStatus(Enum):
 LogFn = Callable[[str, str], None]
 
 
-def _null_log(level: str, message: str) -> None:
+def null_log(level: str, message: str) -> None:
     log.log(logging.ERROR if level == "error" else logging.INFO, "%s", message)
 
 
@@ -144,7 +144,7 @@ class RunnerDeps:
     keybinds: Keybinds = field(default_factory=Keybinds)
     timing: Timing = field(default_factory=Timing)
     clock: Callable[[], int] | None = None
-    log: LogFn = _null_log
+    log: LogFn = null_log
     rng: random.Random = field(default_factory=random.Random)
     require_foreground: bool = True
     abort_on_timeout: bool = True
