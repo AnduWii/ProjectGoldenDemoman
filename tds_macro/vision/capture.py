@@ -143,8 +143,12 @@ class ScreenCapture:
 
 
 class StaticFrameSource:
-    """Serves a fixed image.  Used by tests and by the overlay preview, which
-    works on a frozen screenshot rather than a live feed."""
+    """Serves one fixed image in place of live capture.
+
+    Used by the tests to drive the HUD reader deterministically, and available
+    for replaying a saved screenshot through the vision layer when diagnosing a
+    calibration problem.
+    """
 
     def __init__(self, image: np.ndarray, origin: Rect | None = None) -> None:
         self.image = image

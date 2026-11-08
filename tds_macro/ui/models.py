@@ -108,15 +108,16 @@ class StepListModel(QAbstractListModel):
         return None
 
     def flags(self, index: QModelIndex | QPersistentModelIndex) -> Qt.ItemFlag:
-        base = (
+        del index  # every row has the same flags, valid or not
+        # Enabling/disabling a step is a button, not a checkbox in the list, so
+        # ItemIsUserCheckable is deliberately absent: the flag without a
+        # CheckStateRole in data() would only confuse the view.
+        return (
             Qt.ItemFlag.ItemIsEnabled
             | Qt.ItemFlag.ItemIsSelectable
             | Qt.ItemFlag.ItemIsDragEnabled
-            | Qt.ItemFlag.ItemIsUserCheckable
+            | Qt.ItemFlag.ItemIsDropEnabled
         )
-        if not index.isValid():
-            return base | Qt.ItemFlag.ItemIsDropEnabled
-        return base | Qt.ItemFlag.ItemIsDropEnabled
 
     # -- drag and drop --------------------------------------------------------
     def supportedDropActions(self) -> Qt.DropAction:
