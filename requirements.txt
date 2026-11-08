@@ -1,6 +1,10 @@
-# Runtime dependencies (Windows)
-PySide6==6.8.1.1
-mss==10.0.0
-numpy==2.2.1
-opencv-python-headless==4.10.0.84
-pywin32==308 ; sys_platform == "win32"
+# Runtime dependencies.
+# Pinned to the versions this build was developed and tested against, with a
+# compatible lower bound so a slightly older wheel still resolves. Note that
+# pywin32 is Windows-only; everything else installs anywhere, which is what lets
+# the test suite run on Linux CI.
+PySide6>=6.8,<7
+mss>=9.0,<11
+numpy>=2.1,<3
+opencv-python-headless>=4.10,<6
+pywin32>=306 ; sys_platform == "win32"
