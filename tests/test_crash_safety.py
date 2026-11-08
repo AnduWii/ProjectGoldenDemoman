@@ -191,7 +191,15 @@ def test_app_boots_and_exits_cleanly_through_the_real_entry_point(tmp_path: Path
         env=dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONPATH=str(ROOT)),
         cwd=ROOT,
     )
-    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    # Windows CI caught a crash *after* a clean shutdown: atexit and the
+    # exception hook held references to the controller (a QObject), so Python
+    # finalized it after QApplication was gone, and the process died with an
+    # access violation having already done everything right. Exit code alone is
+    # checked first, but the message is named too so the cause is obvious.
+    assert "access violation" not in combined, combined
+    assert "fatal exception" not in combined, combined
+    assert result.returncode == 0, combined
     assert (tmp_path / "settings.json").exists()
     log = (tmp_path / "tds_macro.log").read_text(encoding="utf-8")
     assert "controller shut down cleanly" in log

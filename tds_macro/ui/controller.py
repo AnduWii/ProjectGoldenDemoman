@@ -12,6 +12,7 @@ thread, which SendInput prefers.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -512,6 +513,13 @@ class AppController(QObject):
             self.tap.stop()
             self.hotkeys.stop()
             self.capture.close()
-            self._timer.stop()
-            self._hud_timer.stop()
+            for timer in (self._timer, self._hud_timer):
+                timer.stop()
+                timer.timeout.disconnect()
+            # Nothing may arrive from the hotkey thread after this point: a
+            # queued signal delivered during Qt's own teardown would call into
+            # objects that are already gone.
+            with contextlib.suppress(RuntimeError):
+                self.hotkeyPressed.disconnect(self._on_hotkey)
+            self.backend = None
             log.info("controller shut down cleanly")

@@ -78,6 +78,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _teardown(app: object, window: object, controller: object) -> None:
+    """Destroy Qt objects deterministically, before the QApplication goes away.
+
+    PySide6 aborts with an access violation if a QObject is finalized *after*
+    the QApplication has been destroyed. That is exactly what happened here: the
+    atexit handler and the exception hook both hold a reference to the
+    controller, which is a QObject owning two QTimers, so Python freed it during
+    interpreter shutdown -- long after Qt had torn itself down. The app had
+    already done everything correctly and saved its settings; it simply crashed
+    on the way out, which on Windows means a "has stopped working" dialog.
+
+    So: shut down, drop the references that would outlive Qt, and delete the
+    widgets while the event loop can still process the deletions.
+    """
+    controller.shutdown()  # type: ignore[attr-defined]
+    atexit.unregister(controller.shutdown)  # type: ignore[attr-defined]
+    sys.excepthook = sys.__excepthook__
+    with contextlib.suppress(RuntimeError):
+        window.hide()  # type: ignore[attr-defined]
+        window.setParent(None)  # type: ignore[attr-defined]
+        window.deleteLater()  # type: ignore[attr-defined]
+        controller.deleteLater()  # type: ignore[attr-defined]
+        app.processEvents()  # type: ignore[attr-defined]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -160,10 +185,9 @@ def main(argv: list[str] | None = None) -> int:
         SetupWizard(controller, window).exec()
         controller.apply_hotkeys()
 
-    try:
-        return app.exec()
-    finally:
-        controller.shutdown()
+    code = app.exec()
+    _teardown(app, window, controller)
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover
