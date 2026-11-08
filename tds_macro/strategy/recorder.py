@@ -180,7 +180,20 @@ class Recorder:
             return
         position = event.pos
 
-        # A click on a calibrated menu button is that action, not a selection.
+        # A pending hotbar press wins over everything else: the user explicitly
+        # selected a tower and then clicked, which is a placement wherever it
+        # landed. Checking menu buttons first would misread a placement made
+        # near a calibrated Upgrade button as an upgrade.
+        if self._pending_slot is not None:
+            slot, pressed_at = self._pending_slot
+            self._pending_slot = None
+            if event.t_ms - pressed_at <= self.options.pending_slot_timeout_ms:
+                self._emit_place(slot, position, event.t_ms)
+                return
+            self.stats.dropped_slot_presses += 1
+
+        # Otherwise, a click on a calibrated menu button is that action rather
+        # than a selection.
         for binding, handler in (
             (self.keybinds.upgrade, self._emit_upgrade),
             (self.keybinds.sell, self._emit_sell),
@@ -190,14 +203,6 @@ class Recorder:
             if self._matches_menu_point(binding, position):
                 handler(event.t_ms)
                 return
-
-        if self._pending_slot is not None:
-            slot, pressed_at = self._pending_slot
-            self._pending_slot = None
-            if event.t_ms - pressed_at <= self.options.pending_slot_timeout_ms:
-                self._emit_place(slot, position, event.t_ms)
-                return
-            self.stats.dropped_slot_presses += 1
 
         tower_id = self._nearest_tower(position)
         if tower_id is None:

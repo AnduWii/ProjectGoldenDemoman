@@ -23,7 +23,7 @@ in this category can promise you won't be banned.
 Use it on an account you are willing to lose.
 
 **What has and has not been verified.** The coordinate maths, the strategy
-engine, the recorder, the HUD reader and the loop controller are covered by 191
+engine, the recorder, the HUD reader and the loop controller are covered by 206
 automated tests that run on every commit. The parts that only exist on Windows —
 `SendInput` actually reaching Roblox, `RegisterHotKey` against your particular
 keyboard layout, DPI behaviour across your particular monitors, and template
@@ -346,7 +346,7 @@ tds_macro/
              controller
   ui/        PySide6: main window, step editor, pickers, settings, wizard
 tools/       win_check.py diagnostics
-tests/       191 tests, no Windows required
+tests/       206 tests, no Windows required
 ```
 
 A few decisions worth knowing if you intend to change it:

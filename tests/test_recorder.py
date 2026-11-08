@@ -204,3 +204,25 @@ def test_wave_gates_can_be_inserted_from_live_hud_readings() -> None:
     rec.feed_all([key(0, "1"), click(50, 0.2, 0.2), key(60, "2"), click(100, 0.6, 0.6)])
     kinds = [type(s).__name__ for s in rec.finish().steps]
     assert kinds == ["Place", "WaitForWave", "Place"]
+
+
+def test_a_pending_hotbar_press_wins_over_a_nearby_menu_button() -> None:
+    """Placing a tower near a calibrated Upgrade button is still a placement:
+    the user selected a slot and then clicked, which is unambiguous intent."""
+    button = NormPoint(0.50, 0.50)
+    binds = Keybinds(upgrade=ActionBinding("click", point=button))
+    rec = Recorder(binds, RecorderOptions(insert_waits=False))
+    rec.feed_all([key(0, "1"), click(50, button.x, button.y)])
+    steps = rec.finish().steps
+    assert [type(s) for s in steps] == [Place]
+    assert steps[0].position.as_tuple() == button.as_tuple()
+
+
+def test_a_menu_button_click_with_no_pending_press_is_still_the_action() -> None:
+    button = NormPoint(0.90, 0.30)
+    binds = Keybinds(upgrade=ActionBinding("click", point=button))
+    rec = Recorder(binds, RecorderOptions(insert_waits=False))
+    rec.feed_all(
+        [key(0, "1"), click(50, 0.2, 0.2), click(400, 0.2, 0.2), click(500, button.x, button.y)]
+    )
+    assert [type(s) for s in rec.finish().steps] == [Place, Upgrade]
