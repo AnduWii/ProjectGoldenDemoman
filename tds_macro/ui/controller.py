@@ -299,6 +299,7 @@ class AppController(QObject):
                     state=self.hud,
                     focus=self.window,
                     find_template=self.find_template,
+                    on_match_ended=self.hud.reset,
                     on_match_started=self.hud.reset,
                     settings=self.settings.loop,
                     timing=self.settings.timing,

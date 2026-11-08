@@ -103,6 +103,11 @@ class LoopDeps:
     state: GameStateProvider
     focus: FocusProvider
     find_template: Callable[[str], MatchResult]
+    # Called when the match ends, before any re-queue clicking. Wired to the
+    # HUD reader's reset: its smoothing keeps the last good wave for a few
+    # frames after the readout disappears, and a stale "wave 40" left sitting
+    # there makes the next phase believe a new match has already started.
+    on_match_ended: Callable[[], None] | None = None
     on_match_started: Callable[[], None] | None = None
     settings: LoopSettings = field(default_factory=LoopSettings)
     timing: Timing = field(default_factory=Timing)
@@ -276,6 +281,10 @@ class LoopController:
         result = self.deps.find_template(TEMPLATE_END_SCREEN)
         if result.found:
             self.deps.log("info", "End-of-match screen detected.")
+            # Drop the finished match's readings now, so the wait for the next
+            # match cannot be satisfied by a stale wave number.
+            if self.deps.on_match_ended is not None:
+                self.deps.on_match_ended()
             self._enter(LoopPhase.REQUEUEING, 0)
             self._wake_at = now + self.deps.settings.between_match_delay_ms
             return

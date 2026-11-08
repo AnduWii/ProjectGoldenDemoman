@@ -280,3 +280,36 @@ def test_progress_description_includes_the_run_counter() -> None:
     controller.start()
     drive(controller, clock, 500)
     assert "run 1 of 4" in controller.describe()
+
+
+def test_stale_wave_from_the_finished_match_cannot_satisfy_the_next_one() -> None:
+    """Without the end-of-match reset, the smoothed wave number from the match
+    that just ended made WAITING_MATCH believe the next one had already begun,
+    so the loop counted a run and started replaying into the lobby."""
+    controller, world, clock, state, _, _ = build(runs_target=2)
+    resets: list[int] = []
+
+    def forget_readings() -> None:
+        resets.append(clock.value)
+        state.wave = None
+
+    controller.deps.on_match_ended = forget_readings
+    controller.start()
+    drive(controller, clock, 3_000)
+
+    # The match ends but the HUD still reports the final wave, as smoothing does.
+    state.wave = 40
+    world.visible = {TEMPLATE_END_SCREEN}
+    drive(controller, clock, 3_000)
+    assert resets, "the end of the match must clear the previous readings"
+    assert controller.phase is LoopPhase.REQUEUEING
+
+    world.visible = {TEMPLATE_PLAY_AGAIN}
+    drive(controller, clock, 3_000)
+    assert controller.phase is LoopPhase.WAITING_MATCH
+    assert controller.runs_completed == 0, "no run may be counted until a match starts"
+
+    world.visible = set()
+    state.wave = 1
+    drive(controller, clock, 3_000)
+    assert controller.runs_completed == 1
