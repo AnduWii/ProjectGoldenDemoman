@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from video_fixture import (
@@ -236,3 +237,150 @@ def test_the_self_test_video_check_passes_here(tmp_path: Path) -> None:
     ok, detail = check_video_support(tmp_path)
     assert ok, detail
     assert list(tmp_path.iterdir()) == [], "the self-test must clean up after itself"
+
+
+# --- review fixes: real-footage hazards -------------------------------------------------
+from video_fixture import PANEL, Event  # noqa: E402
+
+from tds_macro.vision.video import (  # noqa: E402
+    PRICE_TOLERANCE,
+    UNKNOWN,
+    _split_drop,
+    classify,
+)
+
+
+def test_a_drop_is_dated_from_the_latest_run_not_an_older_equal_reading() -> None:
+    """800, income to 1000, then a $200 tower back to 800 -- all within the window."""
+    readings = [(0, 0.0, 800), (1, 0.1, 800), (2, 0.2, 1000), (3, 0.3, 800), (4, 0.4, 800)]
+    assert _split_drop(readings, published=1000, new=800) == [(3, 0.3, 200, 1000)]
+
+
+def test_income_just_before_a_purchase_counts_toward_its_price() -> None:
+    readings = [(0, 0.0, 1000), (1, 0.1, 1020), (2, 0.2, 820), (3, 0.3, 820)]
+    assert _split_drop(readings, published=1000, new=820) == [(2, 0.2, 200, 1020)]
+
+
+def test_purchases_too_quick_to_confirm_are_split_apart() -> None:
+    readings = [(0, 0.0, 1000), (1, 0.1, 800), (2, 0.2, 600), (3, 0.3, 600)]
+    assert _split_drop(readings, published=1000, new=600) == [
+        (1, 0.1, 200, 1000),
+        (2, 0.2, 200, 800),
+    ]
+
+
+def test_an_unreadable_frame_inside_the_new_value_does_not_move_the_date() -> None:
+    readings = [(0, 0.0, 1000), (1, 0.1, 800), (2, 0.2, None), (3, 0.3, 800)]
+    assert _split_drop(readings, published=1000, new=800) == [(1, 0.1, 200, 1000)]
+
+
+def _purchase(cost: int) -> Purchase:
+    return Purchase(t=1.0, wave=1, cost=cost, cash_before=1000)
+
+
+def test_a_second_copy_beside_the_first_is_a_placement_even_with_income_noise() -> None:
+    towers = {"T1": NormPoint(0.50, 0.50)}
+    purchase = _purchase(340)  # a $350 tower, with $10 income landing at once
+    assert abs(340 - 350) <= 350 * PRICE_TOLERANCE
+    classify(purchase, [(NormPoint(0.53, 0.50), 0.8)], towers, {350}, VideoSettings())
+    assert purchase.kind == PLACE
+
+
+def test_a_change_right_on_a_tower_is_an_upgrade_whatever_the_price() -> None:
+    towers = {"T1": NormPoint(0.50, 0.50)}
+    purchase = _purchase(340)
+    classify(purchase, [(NormPoint(0.505, 0.50), 0.8)], towers, {350}, VideoSettings())
+    assert (purchase.kind, purchase.tower_id) == (UPGRADE, "T1")
+
+
+def test_an_upgrade_is_found_even_when_the_interface_changed_more() -> None:
+    towers = {"T1": NormPoint(0.30, 0.40)}
+    purchase = _purchase(150)
+    blobs = [(NormPoint(0.88, 0.38), 1.0), (NormPoint(0.30, 0.41), 0.6)]  # panel first
+    classify(purchase, blobs, towers, {200}, VideoSettings())
+    assert (purchase.kind, purchase.tower_id) == (UPGRADE, "T1")
+
+
+QUICK = [
+    Event(3.4, "place", 200, NormPoint(0.30, 0.40), (40, 200, 240)),
+    Event(3.5, "place", 150, NormPoint(0.60, 0.45), (200, 80, 40)),
+]
+
+
+def test_two_towers_placed_a_tenth_of_a_second_apart_are_both_found(tmp_path: Path) -> None:
+    path = write_match_video(tmp_path / "quick", QUICK, duration=6.0)
+    result = analyze_video(path, match_calibration(), VideoSettings(sample_fps=10))
+    places = [p for p in result.purchases if p.kind == PLACE]
+    assert [p.cost for p in places] == [200, 150]
+    for found, event in zip(places, QUICK, strict=True):
+        assert found.position is not None
+        assert found.position.distance_to(event.position) < 0.02
+
+
+PANEL_EVENTS = [
+    Event(2.4, "place", 100, NormPoint(0.20, 0.30), (40, 200, 240)),
+    Event(4.4, "place", 100, NormPoint(0.35, 0.60), (40, 200, 240)),
+    Event(6.4, "place", 150, NormPoint(0.50, 0.30), (40, 120, 240)),
+    Event(8.4, "upgrade", 60, NormPoint(0.20, 0.30), (40, 40, 250)),
+    Event(10.4, "place", 100, NormPoint(0.60, 0.65), (40, 200, 240)),
+    Event(12.4, "upgrade", 80, NormPoint(0.50, 0.30), (200, 40, 200)),
+    Event(14.4, "place", 150, NormPoint(0.15, 0.70), (40, 120, 240)),
+]
+
+
+def _check_against(result: VideoAnalysis, events: list[Event]) -> None:
+    assert [p.cost for p in result.purchases] == [e.cost for e in events]
+    assert [p.kind for p in result.purchases] == [e.kind for e in events]
+    for found, event in zip(result.purchases, events, strict=True):
+        assert found.position is not None
+        assert found.position.distance_to(event.position) < 0.02, (found, event)
+
+
+def test_an_interface_panel_that_changes_with_every_purchase_is_ignored(
+    tmp_path: Path,
+) -> None:
+    path = write_match_video(tmp_path / "panel", PANEL_EVENTS, panel=True, duration=17.0)
+    result = analyze_video(path, match_calibration())
+    _check_against(result, PANEL_EVENTS)
+    assert any("interface" in warning for warning in result.warnings)
+
+
+def test_an_area_marked_to_ignore_is_never_taken_for_a_tower(tmp_path: Path) -> None:
+    events = PANEL_EVENTS[:3]  # too few purchases to spot the panel automatically
+    path = write_match_video(tmp_path / "few", events, panel=True, duration=8.0)
+    x, y, w, h = PANEL
+    unaided = analyze_video(path, match_calibration())
+    assert any(
+        p.position is not None and p.position.distance_to(NormPoint(x + w / 2, y + h / 2)) < 0.15
+        for p in unaided.purchases
+    ), "the fixture should fool the analysis without help"
+    settings = VideoSettings(ignore_boxes=[NormBox(x, y, w, h)])
+    _check_against(analyze_video(path, match_calibration(), settings), events)
+
+
+def test_the_whole_video_is_read_even_if_its_frame_count_is_wrong(
+    match_video: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Variable-frame-rate files report only an estimated frame count."""
+    import tds_macro.vision.video as video
+
+    real_open = video.open_video
+
+    def short_count(path: Path) -> tuple[cv2.VideoCapture, VideoInfo]:
+        capture, info = real_open(path)
+        return capture, VideoInfo(info.path, info.fps, info.frame_count // 2, info.width,
+                                  info.height)
+
+    monkeypatch.setattr(video, "open_video", short_count)
+    result = video.analyze_video(match_video, match_calibration())
+    assert len(result.purchases) == len(EVENTS)
+
+
+def test_an_unseen_split_is_folded_back_into_its_drop() -> None:
+    from tds_macro.vision.video import _fold_unseen_splits
+
+    ghost = Purchase(t=1.0, wave=1, cost=100, cash_before=1000, kind=UNKNOWN, drop=3)
+    real = Purchase(t=1.1, wave=1, cost=300, cash_before=900, kind=PLACE,
+                    position=NormPoint(0.4, 0.4), drop=3)
+    assert _fold_unseen_splits([ghost, real]) == [real]
+    assert (real.cost, real.cash_before) == (400, 1000)

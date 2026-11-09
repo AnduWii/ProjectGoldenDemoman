@@ -44,6 +44,8 @@ class QuartzBackend:
         self.held_buttons: set[MouseButton] = set()
         self._last_error = ""
         self._cursor: tuple[float, float] | None = None
+        # The last target before clamping to the window, for drag deltas.
+        self._unclamped: tuple[float, float] | None = None
         self._trusted = False
         self._trusted_checked = 0.0
 
@@ -113,6 +115,12 @@ class QuartzBackend:
             return False
         q = QUARTZ
         target = (float(x), float(y))
+        # Where the point really is, even past the window edge: a camera turn
+        # replays as movement, and clamping it would cut the turn short.
+        unclamped = (
+            client.left + point.x * client.width,
+            client.top + point.y * client.height,
+        )
         held = next(iter(self.held_buttons), None)
         if held is None:
             event = q.CGEventCreateMouseEvent(
@@ -129,16 +137,17 @@ class QuartzBackend:
             }[held]
             event = q.CGEventCreateMouseEvent(None, kind, target, cg_button)
             if event is not None:
-                start = self._location()
+                start = self._unclamped if self._unclamped is not None else self._location()
                 q.CGEventSetIntegerValueField(
-                    event, q.kCGMouseEventDeltaX, int(round(target[0] - start[0]))
+                    event, q.kCGMouseEventDeltaX, int(round(unclamped[0] - start[0]))
                 )
                 q.CGEventSetIntegerValueField(
-                    event, q.kCGMouseEventDeltaY, int(round(target[1] - start[1]))
+                    event, q.kCGMouseEventDeltaY, int(round(unclamped[1] - start[1]))
                 )
         ok = self._post(event)
         if ok:
             self._cursor = target
+            self._unclamped = unclamped
         return ok
 
     def _button_event(self, button: MouseButton, down: bool) -> Any:  # pragma: no cover

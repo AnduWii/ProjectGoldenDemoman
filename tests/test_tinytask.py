@@ -383,3 +383,97 @@ def test_a_file_from_the_first_version_still_loads() -> None:
     except StrategyError as exc:  # pragma: no cover - would be a regression
         pytest.fail(f"version 1 file rejected: {exc}")
     assert kinds(loaded.steps) == ["Wait"] and loaded.aspect_ratio == 0.0
+
+
+# --- review fixes ----------------------------------------------------------------------
+from tds_macro.input.coords import Rect  # noqa: E402
+from tds_macro.input.events import DragTracker, WheelAccumulator, build_raw_event  # noqa: E402
+
+
+def test_a_held_key_is_not_waited_out_twice() -> None:
+    rec = keep([down(0, "w"), up(2_000, "w"), press(2_500, 0.9, 0.1)])
+    steps = rec.finish().steps
+    assert kinds(steps) == ["KeyPress", "Wait", "Click"]
+    assert steps[0].hold_ms == 2_000
+    assert abs(steps[1].ms - 500) <= 50  # from the release, not from the press
+
+
+def test_a_dropped_hotbar_press_never_moves_the_clock_backwards() -> None:
+    rec = keep(
+        [
+            down(0, "1"), up(30, "1"),                       # selected, never placed
+            press(1_000, 0.5, 0.5, "right"), move(2_000, 0.7, 0.5),
+            release(3_000, 0.7, 0.5, "right"),               # a camera turn
+            down(4_000, "2"), up(4_030, "2"), press(4_100, 0.4, 0.4),
+        ]
+    )
+    steps = rec.finish().steps
+    assert kinds(steps)[-2:] == ["KeyPress", "Place"] or kinds(steps)[-3:-1] == [
+        "KeyPress", "Wait"
+    ]
+    waited = sum(s.ms for s in steps if isinstance(s, Wait))
+    assert waited <= 4_100, f"{waited} ms of waits in a 4.1 s recording"
+
+
+def test_a_camera_turn_with_the_cursor_locked_keeps_its_movement() -> None:
+    """Roblox puts the cursor back while the camera turns: the release is
+    reported where the drag began, and must not turn the camera back."""
+    rec = keep(
+        [
+            press(0, 0.5, 0.5, "right"),
+            move(50, 0.55, 0.5),
+            move(100, 0.65, 0.5),
+            release(150, 0.5, 0.5, "right"),
+        ],
+        insert_waits=False,
+    )
+    steps = rec.finish().steps
+    assert kinds(steps) == ["Drag"]
+    assert steps[0].path[-1].position == NormPoint(0.65, 0.5)
+    assert steps[0].duration_ms == 150
+
+
+def test_small_wheel_steps_add_up_to_whole_notches() -> None:
+    wheel = WheelAccumulator(120)
+    assert [wheel.add(30) for _ in range(4)] == [0, 0, 0, 1]
+    assert wheel.add(-30) == 0 and wheel.add(-90) == -1  # reversal starts afresh
+    assert WheelAccumulator(120).add(-240) == -2
+    lines = WheelAccumulator(1.0)
+    assert sum(lines.add(0.4) for _ in range(5)) == 2
+
+
+def test_a_drag_is_followed_by_its_movement_not_the_locked_cursor() -> None:
+    tracker = DragTracker()
+    tracker.press((100, 100))
+    for _ in range(3):
+        where = tracker.move_by(5, -2, fallback=(100, 100))
+    assert where == (115, 94)
+    tracker.release()
+    assert tracker.position is None
+
+
+def test_drag_movement_keeps_a_position_past_the_window_edge() -> None:
+    client = Rect(0, 0, 200, 100)
+    moved = build_raw_event(0, RawKind.MOUSE_MOVE, None, "right", (260, 50), client)
+    assert moved.pos is not None and moved.pos.x == pytest.approx(1.3)
+    assert not moved.in_client
+    clicked = build_raw_event(0, RawKind.MOUSE_DOWN, None, "left", (260, 50), client)
+    assert clicked.pos is None
+
+
+def test_a_drag_past_the_edge_reaches_the_backend_unclamped() -> None:
+    """The Mac backend turns the camera by the full movement, so the engine
+    must hand it the real point; each backend clamps the cursor itself."""
+    path = [DragPoint(0, NormPoint(0.5, 0.5)), DragPoint(100, NormPoint(1.4, 0.5))]
+    runner, backend, clock = runner_for([Drag(button="right", path=path)])
+    sent: list[NormPoint] = []
+    real_move = backend.move
+
+    def spy(point: NormPoint) -> bool:
+        sent.append(point)
+        return real_move(point)
+
+    backend.move = spy  # type: ignore[method-assign]
+    runner.start()
+    pump(runner, clock)
+    assert sent == [NormPoint(0.5, 0.5), NormPoint(1.4, 0.5)]

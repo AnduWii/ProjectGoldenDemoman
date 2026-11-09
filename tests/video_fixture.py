@@ -55,8 +55,8 @@ def wave_at(t: float) -> int:
     return 1 + int(t // WAVE_EVERY)
 
 
-def cash_at(t: float) -> int:
-    spent = sum(e.cost for e in EVENTS if e.t <= t)
+def cash_at(t: float, events: list[Event] | None = None) -> int:
+    spent = sum(e.cost for e in (EVENTS if events is None else events) if e.t <= t)
     return START_CASH + int(t) * INCOME_PER_S - spent
 
 
@@ -86,7 +86,32 @@ def _background() -> np.ndarray:
     return base
 
 
-def render_frame(t: float, background: np.ndarray) -> np.ndarray:
+# Where the interface panel sits when ``panel=True``: a square-ish block like
+# TDS's tower panel, whose contents change with every purchase.
+PANEL = (0.80, 0.25, 0.16, 0.26)  # x, y, width, height (normalized)
+
+
+def _draw_panel(frame: np.ndarray, version: int) -> None:
+    x, y, w, h = PANEL
+    x0, y0 = int(x * WIDTH), int(y * HEIGHT)
+    x1, y1 = int((x + w) * WIDTH), int((y + h) * HEIGHT)
+    frame[y0:y1, x0:x1] = (35, 35, 35)
+    rng = np.random.default_rng(100 + version)
+    # A different picture and "text" after each purchase -- a big, bright,
+    # lasting change, bigger than any tower.
+    blocks = rng.integers(0, 2, (6, 5)).astype(bool)
+    cell_h, cell_w = (y1 - y0) // 6, (x1 - x0) // 5
+    for r in range(6):
+        for c in range(5):
+            if blocks[r, c]:
+                frame[y0 + r * cell_h : y0 + (r + 1) * cell_h - 2,
+                      x0 + c * cell_w : x0 + (c + 1) * cell_w - 2] = (230, 230, 230)
+
+
+def render_frame(
+    t: float, background: np.ndarray, events: list[Event] | None = None, panel: bool = False
+) -> np.ndarray:
+    events = EVENTS if events is None else events
     frame = background.copy()
     # Enemies walking along the path the whole time.
     for i in range(4):
@@ -94,25 +119,32 @@ def render_frame(t: float, background: np.ndarray) -> np.ndarray:
         cv2.circle(frame, (x, int(HEIGHT * 0.78)), 9, (60, 60, 220), -1)
     # Towers that exist at time t, in their current colour.
     towers: dict[tuple[float, float], tuple[int, int, int]] = {}
-    for event in EVENTS:
+    for event in events:
         if event.t <= t:
             towers[event.position.as_tuple()] = event.colour
     for (x, y), colour in towers.items():
         cx, cy = int(x * WIDTH), int(y * HEIGHT)
         cv2.rectangle(frame, (cx - 11, cy - 11), (cx + 11, cy + 11), colour, -1)
     _draw_text(frame, str(wave_at(t)), WAVE_BOX)
-    _draw_text(frame, f"${cash_at(t):,}", CASH_BOX)
+    _draw_text(frame, f"${cash_at(t, events):,}", CASH_BOX)
+    if panel:
+        _draw_panel(frame, sum(1 for e in events if e.t <= t))
     return frame
 
 
-def write_match_video(path: Path) -> Path:
+def write_match_video(
+    path: Path,
+    events: list[Event] | None = None,
+    panel: bool = False,
+    duration: float = DURATION,
+) -> Path:
     """Write the synthetic match; returns the file actually written, whose
     extension depends on which formats this OpenCV build can write."""
     background = _background()
 
     def frames() -> Iterator[np.ndarray]:
-        for index in range(int(DURATION * FPS)):
-            yield render_frame(index / FPS, background)
+        for index in range(int(duration * FPS)):
+            yield render_frame(index / FPS, background, events, panel)
 
     return write_video(path, FPS, (WIDTH, HEIGHT), frames)
 

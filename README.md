@@ -36,7 +36,7 @@ Use it on an account you are willing to lose.
 
 **What has and has not been verified.** The coordinate maths, the strategy
 engine, the recorder, the HUD reader, the loop controller and the video importer
-are covered by 341 automated tests that run on every commit. On `windows-latest`, CI also checks
+are covered by 367 automated tests that run on every commit. On `windows-latest`, CI also checks
 per-monitor DPI awareness, claims and releases a real global hotkey, captures
 the screen, and **launches the built `TDSMacro.exe`**. On macOS (Apple Silicon
 and Intel), CI checks that every macOS framework call the app makes exists,
@@ -278,7 +278,13 @@ Everything else is kept too, as in TinyTask:
 - any other key becomes **Press key**, held for as long as you held it — so
   holding W for two seconds replays as two seconds of W, not thirty taps;
 - a right-button drag (turning the camera) becomes a **Drag** that follows the
-  same path at the same speed;
+  same movement at the same speed. Roblox locks the cursor while the camera
+  turns, so the movement is recorded from the mouse itself, not from where
+  the cursor appears. **On a Mac** the turn replays the same way. **On
+  Windows** it may not: replaying it faithfully would need relative mouse
+  movement, which depends on your pointer-speed settings — something this app
+  promises not to rely on. If a recording needs a camera angle on Windows, set
+  it before pressing Play;
 - the scroll wheel (zoom) becomes **Scroll**, with notches in one burst merged.
 
 Not recorded: the app's own hotkeys, and keyboard shortcuts with Ctrl, Alt,
@@ -308,7 +314,11 @@ Towers that cost the same are taken to be the same tower.
    most computers. If a file will not open, convert it to MP4 (H.264) — for
    example with QuickTime's **File → Export** or VLC's **Convert/Save**.
 2. If the video has black bars, a webcam or an overlay, **Mark the game
-   area...** around just the game.
+   area...** around just the game. If something inside the game view changes
+   when the player buys things but is not a tower — the tower panel, a
+   webcam, chat — **Ignore an area...** over it. In longer videos (six or more
+   purchases) the app also finds the interface by itself: anything that
+   changes with most purchases is left out, and the result says so.
 3. The app needs to read this video's wave and cash numbers. If your own wave &
    cash reading already works on it (your own recording, same window size), it
    says so. Otherwise press **Teach wave & cash from this video...**: mark each
@@ -318,7 +328,8 @@ Towers that cost the same are taken to be the same tower.
 5. **Check the result.** For each tower price, choose which of *your* hotbar
    slots holds that tower — another player's loadout is not yours. For each
    purchase, fix the type (placed / upgraded / ignore) and click the picture to
-   move a tower if it landed in the wrong spot. Unclear ones are yellow.
+   move a tower if it landed in the wrong spot. Unclear ones are yellow and
+   are left out unless you choose what they were.
 6. **Create recording.** It opens like any other recording. Use **Practice**
    first.
 
@@ -329,7 +340,9 @@ pace of *your* match. Unticked, it uses the video's own timing, TinyTask-style.
 What it cannot learn from a video, so add these yourself in the editor if they
 matter: selling, abilities, targeting changes, skipping waves, and anything the
 player does that does not cost cash. If the player turns the camera while
-buying, that purchase's spot cannot be found and is marked unclear. A video at
+buying, that purchase's spot cannot be found and is marked unclear. Two
+purchases a fraction of a second apart are usually told apart; any closer and
+they show up as one purchase at the combined price. A video at
 a different shape from your screen (YouTube is 16:9, a MacBook is 16:10) is
 handled: tower spots are moved to the same place on the map.
 
@@ -541,7 +554,7 @@ tds_macro/
   ui/        PySide6: simple screen, advanced editor, pickers, settings,
              wizard, video import
 tools/       win_check.py and mac_check.py diagnostics
-tests/       341 tests, no Windows or Mac required
+tests/       367 tests, no Windows or Mac required
 ```
 
 A few decisions worth knowing if you intend to change it:

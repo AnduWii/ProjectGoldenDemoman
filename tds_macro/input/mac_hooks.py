@@ -12,7 +12,7 @@ import logging
 import queue
 from typing import Any
 
-from .events import RawEvent, RawKind, build_raw_event
+from .events import DragTracker, RawEvent, RawKind, WheelAccumulator, build_raw_event
 from .mac_keys import FLAG_COMMAND, FLAG_CONTROL, FLAG_OPTION, mac_key_name
 from .mac_quartz import QUARTZ, EventTapThread, is_autorepeat, is_our_event, monotonic_ms
 from .window import GeometryProvider
@@ -54,6 +54,10 @@ class MacRawInputTap:
         self._queue: queue.Queue[QueuedEvent] = queue.Queue(maxsize=4096)
         self._tap: EventTapThread | None = None
         self._kinds: dict[int, tuple[RawKind, str | None]] = {}
+        self._drag = DragTracker()
+        # macOS reports wheel movement in fractional lines (trackpads send
+        # many small fractions, including the momentum after a swipe).
+        self._wheel = WheelAccumulator(1.0)
 
     @property
     def running(self) -> bool:
@@ -66,6 +70,8 @@ class MacRawInputTap:
         if self.running:
             return ""
         self._kinds = _event_kinds()
+        self._drag.release()
+        self._wheel.reset()
         self._tap = EventTapThread(
             "tds-input-tap", list(self._kinds), self._on_event, want_filter=False
         )
@@ -98,11 +104,38 @@ class MacRawInputTap:
         kind, button = entry
         if kind is RawKind.KEY_DOWN and is_autorepeat(event):
             return False
-        if self.only_when_foreground and not self.geometry.is_foreground():
-            return False
         key: str | None = None
         screen_pos: tuple[int, int] | None = None
         delta = 0
+        if kind not in (RawKind.KEY_DOWN, RawKind.KEY_UP):
+            where = QUARTZ.CGEventGetLocation(event)
+            screen_pos = (int(round(where.x)), int(round(where.y)))
+            # Drag state is kept up to date even while Roblox is not in front.
+            if kind is RawKind.MOUSE_DOWN:
+                self._drag.press(screen_pos)
+            elif kind is RawKind.MOUSE_UP:
+                self._drag.release()
+            elif kind is RawKind.MOUSE_MOVE:
+                # Roblox locks the cursor while the camera turns, so the
+                # location stands still; the movement is in the delta fields.
+                screen_pos = self._drag.move_by(
+                    float(QUARTZ.CGEventGetIntegerValueField(event, QUARTZ.kCGMouseEventDeltaX)),
+                    float(QUARTZ.CGEventGetIntegerValueField(event, QUARTZ.kCGMouseEventDeltaY)),
+                    (where.x, where.y),
+                )
+            elif kind is RawKind.SCROLL:
+                # Fractional lines on the vertical axis; positive is up.
+                delta = self._wheel.add(
+                    float(
+                        QUARTZ.CGEventGetDoubleValueField(
+                            event, QUARTZ.kCGScrollWheelEventFixedPtDeltaAxis1
+                        )
+                    )
+                )
+                if delta == 0:
+                    return False
+        if self.only_when_foreground and not self.geometry.is_foreground():
+            return False
         if kind in (RawKind.KEY_DOWN, RawKind.KEY_UP):
             # On macOS, Ctrl/Option/Cmd never arrive as key presses (they are
             # "flags changed" events), so the recorder cannot see them held.
@@ -115,18 +148,6 @@ class MacRawInputTap:
             key = mac_key_name(keycode)
             if key is None:
                 return False
-        else:
-            where = QUARTZ.CGEventGetLocation(event)
-            screen_pos = (int(round(where.x)), int(round(where.y)))
-            if kind is RawKind.SCROLL:
-                # Lines on the vertical axis; positive is up, as on Windows.
-                delta = int(
-                    QUARTZ.CGEventGetIntegerValueField(
-                        event, QUARTZ.kCGScrollWheelEventDeltaAxis1
-                    )
-                )
-                if delta == 0:
-                    return False
         try:
             self._queue.put_nowait((monotonic_ms(), kind, key, button, screen_pos, delta))
         except queue.Full:

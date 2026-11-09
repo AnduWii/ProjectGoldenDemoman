@@ -22,7 +22,7 @@ import queue
 import threading
 import time
 
-from .events import RawEvent, RawKind, build_raw_event
+from .events import DragTracker, RawEvent, RawKind, WheelAccumulator, build_raw_event
 from .keys import vk_to_key
 from .win32_defs import (
     HOOKPROC,
@@ -31,6 +31,7 @@ from .win32_defs import (
     LLKHF_INJECTED,
     MSG,
     MSLLHOOKSTRUCT,
+    POINT,
     TDS_MACRO_SIGNATURE,
     WH_KEYBOARD_LL,
     WH_MOUSE_LL,
@@ -90,8 +91,12 @@ class RawInputTap:
         self._keyboard_proc: object = None
         self._mouse_proc: object = None
         # Buttons the user is holding, so pointer movement is only forwarded
-        # during a drag rather than flooding the queue the whole time.
+        # during a drag rather than flooding the queue the whole time. Tracked
+        # even while input is not being accepted, so a button released over
+        # another window is not left "held" for good.
         self._held: set[str] = set()
+        self._drag = DragTracker()
+        self._wheel = WheelAccumulator(120)
         self._atexit_registered = False
 
     @property
@@ -107,6 +112,9 @@ class RawInputTap:
             return ""
         self.error = ""
         self._ready.clear()
+        self._held.clear()
+        self._drag.release()
+        self._wheel.reset()
         self._running = True
         self._thread = threading.Thread(target=self._run, name="tds-input-tap", daemon=True)
         self._thread.start()
@@ -210,26 +218,43 @@ class RawInputTap:
 
     def _on_mouse(self, code: int, wparam: int, lparam: int) -> int:  # pragma: no cover
         assert user32 is not None
-        if code == 0 and self._accepting():
+        if code == 0 and self._running:
             data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
             if data.dwExtraInfo != TDS_MACRO_SIGNATURE:
-                message = int(wparam)
-                where = (int(data.pt.x), int(data.pt.y))
-                entry = _MOUSE_MESSAGES.get(message)
-                if entry is not None:
-                    kind, button = entry
-                    if kind is RawKind.MOUSE_DOWN:
-                        self._held.add(button)
-                    else:
-                        self._held.discard(button)
-                    self._push(kind, None, button, where)
-                elif message == WM_MOUSEMOVE and self._held:
-                    self._push(RawKind.MOUSE_MOVE, None, next(iter(self._held)), where)
-                elif message == WM_MOUSEWHEEL:
-                    # The wheel delta is the signed high word of mouseData.
-                    raw = (int(data.mouseData) >> 16) & 0xFFFF
-                    signed = raw - 0x10000 if raw & 0x8000 else raw
-                    notches = signed // 120 if signed % 120 == 0 else (1 if signed > 0 else -1)
-                    if notches:
-                        self._push(RawKind.SCROLL, None, None, where, notches)
+                self._on_mouse_message(int(wparam), data)
         return int(user32.CallNextHookEx(None, code, wparam, lparam))
+
+    def _on_mouse_message(self, message: int, data: MSLLHOOKSTRUCT) -> None:  # pragma: no cover
+        assert user32 is not None
+        accepting = self._accepting()
+        where = (int(data.pt.x), int(data.pt.y))
+        entry = _MOUSE_MESSAGES.get(message)
+        if entry is not None:
+            kind, button = entry
+            if kind is RawKind.MOUSE_DOWN:
+                self._held.add(button)
+                self._drag.press(where)
+            else:
+                self._held.discard(button)
+                if not self._held:
+                    self._drag.release()
+            if accepting:
+                self._push(kind, None, button, where)
+        elif message == WM_MOUSEMOVE and self._held:
+            # The hook runs before the cursor moves, so the cursor position
+            # now is where this movement starts from -- even when Roblox has
+            # locked the cursor and keeps putting it back.
+            cursor = POINT()
+            if not user32.GetCursorPos(ctypes.byref(cursor)):
+                cursor.x, cursor.y = where
+            virtual = self._drag.move_by(
+                where[0] - cursor.x, where[1] - cursor.y, (cursor.x, cursor.y)
+            )
+            if accepting:
+                self._push(RawKind.MOUSE_MOVE, None, next(iter(sorted(self._held))), virtual)
+        elif message == WM_MOUSEWHEEL:
+            # The wheel delta is the signed high word of mouseData.
+            raw = (int(data.mouseData) >> 16) & 0xFFFF
+            notches = self._wheel.add(raw - 0x10000 if raw & 0x8000 else raw)
+            if notches and accepting:
+                self._push(RawKind.SCROLL, None, None, where, notches)

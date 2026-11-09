@@ -455,8 +455,13 @@ class MainWindow(QMainWindow):
 
         # No "discard changes?" prompt: the import backs unsaved work up first.
         dialog = VideoImportDialog(self.controller, self)
-        if dialog.exec() == VideoImportDialog.DialogCode.Accepted:
-            self.simple.refresh_recordings()
+        try:
+            if dialog.exec() == VideoImportDialog.DialogCode.Accepted:
+                self.simple.refresh_recordings()
+        finally:
+            # Parented to this window, it would otherwise live (with every
+            # frame thumbnail of the analysis) until the app closes.
+            dialog.deleteLater()
 
     # -- actions ---------------------------------------------------------------
     def _start(self) -> None:
@@ -569,16 +574,25 @@ class MainWindow(QMainWindow):
                 "not minimized, then try again.",
             )
             return
+        is_tower = isinstance(self.editor.step, Place)
         dialog = PickerDialog(
             numpy_to_qimage(np.asarray(frame)),
-            "Pick a placement point",
-            "Click where this tower should be placed.",
+            "Pick a placement point" if is_tower else "Pick a point",
+            "Click where this tower should be placed."
+            if is_tower
+            else "Click where this should happen.",
             mode="point",
-            markers=self.controller.placement_points(),
+            markers=self.controller.placement_points(on_screen=True),
             parent=self,
         )
         if dialog.exec() == PickerDialog.DialogCode.Accepted and dialog.result_point:
-            self.editor.update_position(dialog.result_point)
+            point = dialog.result_point
+            if is_tower:
+                # Tower spots are stored in the recording's screen shape and
+                # moved to this screen at replay; store the picked spot the
+                # same way so it is not moved twice.
+                point = self.controller.view_to_world(point)
+            self.editor.update_position(point)
 
     def _preview_points(self) -> None:
         client, frame = self.controller.grab_game_frame()
@@ -587,7 +601,7 @@ class MainWindow(QMainWindow):
                 self, "No screenshot", "Could not capture the Roblox window."
             )
             return
-        points = self.controller.placement_points()
+        points = self.controller.placement_points(on_screen=True)
         boxes = [
             (name, region.box)
             for name, region in (

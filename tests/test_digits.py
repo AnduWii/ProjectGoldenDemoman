@@ -299,3 +299,43 @@ def test_a_current_over_total_readout_reads_the_current_value() -> None:
     assert parse_readout("12/40") == "12"
     assert parse_readout("$1,250") == "1250"
     assert parse_readout("/40") == ""
+
+
+# --- calibration format 1 -> 2 ------------------------------------------------------------
+def _format1_vector(glyph: np.ndarray) -> np.ndarray:
+    """How format 1 stored a template: no softening."""
+    from tds_macro.vision.digits import fit_glyph
+
+    vector = fit_glyph(glyph).astype(np.float32).reshape(-1)
+    vector -= vector.mean()
+    return vector / float(np.linalg.norm(vector))
+
+
+def test_templates_saved_by_format_1_still_read_after_the_update(tmp_path) -> None:
+    import json
+
+    from tds_macro.vision.calibration import CALIBRATION_FILE, Calibration
+    from tds_macro.vision.capture import NormBox
+    from tds_macro.vision.digits import normalize_template
+
+    old = Calibration(client_size=(100, 40))
+    for region in (old.wave, old.cash):
+        region.box = NormBox(0.1, 0.1, 0.5, 0.5)
+        region.classifier = DigitClassifier()
+        for char in "0123456789$,":
+            region.classifier.templates[char] = [_format1_vector(glyph_mask(char))]
+    old.save(tmp_path)
+    payload = json.loads((tmp_path / CALIBRATION_FILE).read_text(encoding="utf-8"))
+    payload["version"] = 1
+    (tmp_path / CALIBRATION_FILE).write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = Calibration.load(tmp_path)
+    assert loaded.version == 2
+    for char in "0123456789$,":
+        stored = loaded.cash.classifier.templates[char][0]
+        assert np.allclose(stored, normalize_template(glyph_mask(char)), atol=1e-5), char
+    # The thin "1" is the glyph the old templates lost first.
+    for text in ("111", "$1,110", "7104"):
+        result = read_number(render(text), loaded.cash.classifier)
+        assert result.text == text and result.ok, (text, result)
+

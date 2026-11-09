@@ -203,6 +203,8 @@ if IS_WINDOWS:  # pragma: no cover - signatures only matter on Windows
     user32.GetClientRect.argtypes = (wintypes.HWND, ctypes.POINTER(RECT))
     user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(RECT))
     user32.ClientToScreen.argtypes = (wintypes.HWND, ctypes.POINTER(POINT))
+    user32.GetCursorPos.argtypes = (ctypes.POINTER(POINT),)
+    user32.GetCursorPos.restype = wintypes.BOOL
     user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
     user32.GetSystemMetrics.restype = ctypes.c_int
     user32.RegisterHotKey.argtypes = (

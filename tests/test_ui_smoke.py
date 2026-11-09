@@ -518,3 +518,27 @@ def test_nothing_open_never_looks_like_a_recording_is_chosen(
     window.simple.refresh_recordings()
     assert combo.currentText() == "only"
     assert combo.findText("Choose a recording...") < 0
+
+
+def test_tower_spots_picked_on_screen_are_stored_in_the_recordings_shape(
+    controller: AppController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 16:9 video's strategy fixed up on a 16:10 MacBook: what the user picks
+    on screen must land on that same spot at replay, not be moved twice."""
+    from tds_macro.input.coords import remap_world_point
+
+    monkeypatch.setattr(controller, "client_aspect", lambda: 16 / 10)
+    controller.strategy = Strategy(
+        name="video",
+        aspect_ratio=16 / 9,
+        steps=[Place(slot=1, position=NormPoint(0.2, 0.5), tower_id="T1")],
+    )
+    picked_on_screen = NormPoint(0.12, 0.4)
+    stored = controller.view_to_world(picked_on_screen)
+    replayed = remap_world_point(stored, 16 / 9, 16 / 10)  # what the engine does
+    assert replayed.x == pytest.approx(picked_on_screen.x)
+    assert replayed.y == pytest.approx(picked_on_screen.y)
+    # Markers show where towers will really land on this screen.
+    (_, shown), = controller.placement_points(on_screen=True)
+    assert shown == remap_world_point(NormPoint(0.2, 0.5), 16 / 9, 16 / 10)
+    assert controller.placement_points()[0][1] == NormPoint(0.2, 0.5)

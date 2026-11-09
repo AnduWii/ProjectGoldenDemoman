@@ -67,9 +67,12 @@ def build_raw_event(
     """
     pos: NormPoint | None = None
     in_client = False
-    if screen_pos is not None and client is not None:
+    if screen_pos is not None and client is not None and client.is_valid():
         in_client = client.contains(*screen_pos)
-        if in_client:
+        # Drag movement keeps its position even off the game view: a camera
+        # turn is tracked as a virtual pointer that can travel well past the
+        # window edge while the real cursor stays locked in place.
+        if in_client or kind is RawKind.MOUSE_MOVE:
             pos = screen_to_norm(screen_pos[0], screen_pos[1], client)
     return RawEvent(
         t_ms=t_ms,
@@ -81,3 +84,57 @@ def build_raw_event(
         in_client=in_client,
         delta=delta,
     )
+
+
+class WheelAccumulator:
+    """Turns wheel movement into whole notches without losing fractions.
+
+    Precision touchpads and free-spinning or high-resolution wheels report a
+    notch as several small deltas (on Windows, 30 + 30 + 30 + 30 instead of
+    one 120). Rounding each to a whole notch would record four notches -- and
+    replay a zoom four times too far. The remainder is carried instead, and
+    it is dropped when the direction reverses.
+    """
+
+    def __init__(self, unit: float) -> None:
+        self.unit = float(unit)
+        self._rest = 0.0
+
+    def reset(self) -> None:
+        self._rest = 0.0
+
+    def add(self, amount: float) -> int:
+        if amount == 0:
+            return 0
+        if self._rest and (self._rest > 0) != (amount > 0):
+            self._rest = 0.0
+        self._rest += amount
+        notches = int(self._rest / self.unit)  # truncates toward zero
+        self._rest -= notches * self.unit
+        return notches
+
+
+class DragTracker:
+    """A virtual pointer for drags, built from movement rather than position.
+
+    While the right button turns the camera, Roblox locks the cursor in place:
+    on macOS the reported location never changes (only the event's delta
+    fields do), and on Windows the cursor is put back after every move. A path
+    of reported positions therefore shows no movement, and the turn would be
+    recorded as a plain click. Summing the movement instead gives the path the
+    hand actually made, whether or not the cursor was locked.
+    """
+
+    def __init__(self) -> None:
+        self.position: tuple[float, float] | None = None
+
+    def press(self, where: tuple[float, float]) -> None:
+        self.position = (float(where[0]), float(where[1]))
+
+    def move_by(self, dx: float, dy: float, fallback: tuple[float, float]) -> tuple[int, int]:
+        base = self.position if self.position is not None else fallback
+        self.position = (base[0] + dx, base[1] + dy)
+        return (int(round(self.position[0])), int(round(self.position[1])))
+
+    def release(self) -> None:
+        self.position = None

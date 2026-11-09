@@ -84,13 +84,23 @@ class VideoInfo:
 class VideoSettings:
     """Tunables for the analysis. Defaults suit a normal 30-60 fps recording."""
 
-    sample_fps: float = 4.0
+    # Samples per second of video. High enough that two purchases a fraction
+    # of a second apart are each seen; decoding every frame dominates anyway.
+    sample_fps: float = 8.0
     game_box: NormBox = WHOLE_FRAME
+    # Areas of the game view to ignore (relative to the game area), such as
+    # the tower panel: its text changes with every purchase.
+    ignore_boxes: list[NormBox] = field(default_factory=list)
     work_width: int = 480  # change detection runs on a downscaled grey copy
     change_threshold: int = 28  # grey-level difference that counts as "changed"
     min_blob_fraction: float = 0.0004  # smallest change worth calling a tower
     tower_radius: float = 0.045  # how close a change must be to a tower to be an upgrade
     thumbnail_width: int = 480
+    # A spot that changes along with at least this share of all purchases (and
+    # at least interface_min_purchases of them) is the interface, not a tower.
+    interface_share: float = 0.5
+    interface_min_purchases: int = 6
+    interface_grid: int = 24  # cells per side of the change-frequency map
 
 
 @dataclass
@@ -107,6 +117,8 @@ class Purchase:
     confidence: float = 0.0
     thumbnail: np.ndarray | None = None
     note: str = ""
+    # Purchases split out of one cash drop share this number (see _split_drop).
+    drop: int = 0
 
     def timestamp(self) -> str:
         minutes, seconds = divmod(int(self.t), 60)
@@ -131,6 +143,8 @@ class VideoAnalysis:
     samples: int = 0
     unreadable_samples: int = 0
     warnings: list[str] = field(default_factory=list)
+    # Areas found to be the interface and ignored (see _interface_areas).
+    interface_areas: list[NormBox] = field(default_factory=list)
 
     @property
     def readable_fraction(self) -> float:
@@ -283,9 +297,14 @@ def read_frame_at(path: Path, seconds: float) -> np.ndarray:
     """One frame, for previews and for teaching the HUD from the video."""
     capture, info = open_video(path)
     try:
-        index = max(0, min(int(seconds * info.fps), max(0, info.frame_count - 1)))
-        capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+        # By time, not frame number: screen recordings are often variable
+        # frame rate, where frame N is not at N / fps seconds.
+        capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, seconds) * 1000.0)
         ok, frame = capture.read()
+        if not ok or frame is None:
+            index = max(0, min(int(seconds * info.fps), max(0, info.frame_count - 1)))
+            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame = capture.read()
         if not ok or frame is None:
             raise VideoError(f"Could not read the frame at {seconds:.1f}s.")
         return frame
@@ -316,11 +335,19 @@ def _difference(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return diff.max(axis=2) if diff.ndim == 3 else diff
 
 
-def _hud_mask(shape: tuple[int, int], calibration: Calibration) -> np.ndarray:
-    """True over the wave and cash readouts (padded): their digits change all
-    the time and must never be mistaken for a tower."""
+def _hud_mask(
+    shape: tuple[int, int], calibration: Calibration, ignore: list[NormBox] | None = None
+) -> np.ndarray:
+    """True over the wave and cash readouts (padded) -- their digits change all
+    the time and must never be mistaken for a tower -- and over any area the
+    user chose to ignore."""
     height, width = shape
     mask = np.zeros(shape, dtype=bool)
+    for area in ignore or []:
+        left, top = max(0, int(area.x * width)), max(0, int(area.y * height))
+        right = min(width, int((area.x + area.width) * width) + 1)
+        bottom = min(height, int((area.y + area.height) * height) + 1)
+        mask[top:bottom, left:right] = True
     for region in (calibration.wave, calibration.cash):
         box = region.box
         if box is None:
@@ -348,13 +375,27 @@ def locate_new_object(
     little, from the first leaves the new static change. Returns centroids in
     normalized coordinates with a strength score in [0, 1].
     """
+    return find_blobs(change_mask(before2, before, after, hud, settings), settings)
+
+
+def change_mask(
+    before2: np.ndarray,
+    before: np.ndarray,
+    after: np.ndarray,
+    hud: np.ndarray,
+    settings: VideoSettings,
+) -> np.ndarray:
+    """Pixels that newly changed and stayed (see :func:`locate_new_object`)."""
     threshold = settings.change_threshold
     new = _difference(after, before) > threshold
     motion = (_difference(before, before2) > threshold).astype(np.uint8)
     motion = cv2.dilate(motion, np.ones((7, 7), np.uint8), iterations=2).astype(bool)
     candidate = (new & ~motion & ~hud).astype(np.uint8)
-    candidate = cv2.morphologyEx(candidate, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    return cv2.morphologyEx(candidate, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
+
+def find_blobs(candidate: np.ndarray, settings: VideoSettings) -> list[tuple[NormPoint, float]]:
+    """Connected areas of change, as centroids with a strength in [0, 1]."""
     count, _, stats, centroids = cv2.connectedComponentsWithStats(candidate, connectivity=8)
     height, width = candidate.shape
     minimum = max(4, int(settings.min_blob_fraction * height * width))
@@ -365,9 +406,23 @@ def locate_new_object(
             continue
         cx, cy = centroids[label]
         strength = min(1.0, area / (minimum * 10))
+        # Towers are compact. A long thin change is text or a bar, and one
+        # touching the edge of the view is the interface.
+        w, h = int(stats[label, cv2.CC_STAT_WIDTH]), int(stats[label, cv2.CC_STAT_HEIGHT])
+        x0, y0 = int(stats[label, cv2.CC_STAT_LEFT]), int(stats[label, cv2.CC_STAT_TOP])
+        if max(w, h) > 2.5 * max(1, min(w, h)):
+            strength *= 0.3
+        if x0 <= 0 or y0 <= 0 or x0 + w >= width or y0 + h >= height:
+            strength *= 0.5
         blobs.append((NormPoint(float(cx) / width, float(cy) / height), strength))
     blobs.sort(key=lambda blob: blob[1], reverse=True)
     return blobs
+
+
+def _near_placement_price(cost: int, placement_costs: set[int]) -> bool:
+    """Same tower price as an earlier placement, allowing for income landing
+    in the same moment (see PRICE_TOLERANCE)."""
+    return any(abs(cost - price) <= price * PRICE_TOLERANCE for price in placement_costs)
 
 
 def classify(
@@ -377,30 +432,134 @@ def classify(
     placement_costs: set[int],
     settings: VideoSettings,
 ) -> None:
-    """Decide placement vs upgrade, and where. Mutates ``purchase``."""
+    """Decide placement vs upgrade, and where. Mutates ``purchase``.
+
+    Every clear change is considered, not just the biggest: the interface
+    can change more than the tower does. A change on an existing tower is an
+    upgrade. At a price a placement has had, it must be right on the tower --
+    a second copy can be placed beside the first, but never on top of it.
+    """
     if not blobs:
         purchase.kind = UNKNOWN
         purchase.note = "nothing visibly changed at the moment of this purchase"
         return
-    position, strength = blobs[0]
-    nearest: tuple[float, str] | None = None
-    for tower_id, spot in towers.items():
-        distance = spot.distance_to(position)
-        if distance <= settings.tower_radius and (nearest is None or distance < nearest[0]):
-            nearest = (distance, tower_id)
-    # A change on top of an existing tower, at a price no placement has had,
-    # is that tower being upgraded. The same price as a known placement next
-    # to an existing tower is more likely a second copy placed beside it.
-    if nearest is not None and purchase.cost not in placement_costs:
+    same_price = _near_placement_price(purchase.cost, placement_costs)
+    radius = settings.tower_radius / 2 if same_price else settings.tower_radius
+    strongest = blobs[0][1]
+    nearest: tuple[float, str, float] | None = None
+    for position, strength in blobs:
+        if strength < max(0.15, strongest * 0.25):
+            continue
+        for tower_id, spot in towers.items():
+            distance = spot.distance_to(position)
+            if distance <= radius and (nearest is None or distance < nearest[0]):
+                nearest = (distance, tower_id, strength)
+    if nearest is not None:
         purchase.kind = UPGRADE
         purchase.tower_id = nearest[1]
         purchase.position = towers[nearest[1]]
+        purchase.confidence = nearest[2]
     else:
         purchase.kind = PLACE
-        purchase.position = position
-    purchase.confidence = strength
-    if strength < 0.35:
+        purchase.position, purchase.confidence = blobs[0]
+    if purchase.confidence < 0.35:
         purchase.note = "weak change on screen -- check the spot"
+
+
+def _split_drop(
+    readings: list[tuple[int, float, int | None]], published: int, new: int
+) -> list[tuple[int, float, int, int]]:
+    """The purchases behind one confirmed cash drop: (sample, t, cost, before).
+
+    A drop is dated to the start of the *latest* run of the new value -- not
+    an older sample that happened to show the same figure before income
+    raised it again. Readings between the old and the new value that never
+    lasted long enough to be confirmed are purchases made in quick
+    succession (two farms dropped a fraction of a second apart); each becomes
+    its own purchase instead of one at the summed price.
+    """
+    run_start = len(readings) - 1
+    for index in range(len(readings) - 1, -1, -1):
+        value = readings[index][2]
+        if value == new:
+            run_start = index
+        elif value is not None:
+            break
+    earlier = [r for r in readings[:run_start] if r[2] is not None]
+    since: list[tuple[int, float, int | None]] = []
+    for reading in reversed(earlier):
+        value = reading[2]
+        assert value is not None
+        if value >= published:
+            break
+        since.append(reading)
+    since.reverse()
+    chain: list[tuple[int, float, int]] = []
+    for sample, t, value in since:
+        assert value is not None
+        if new < value and (not chain or value < chain[-1][2]):
+            chain.append((sample, t, value))
+    prior_index = len(earlier) - len(since) - 1
+    prior = earlier[prior_index][2] if prior_index >= 0 else None
+    first_after = chain[0][2] if chain else new
+    start = prior if prior is not None and prior > first_after else published
+    steps = [*chain, (readings[run_start][0], readings[run_start][1], new)]
+    pieces: list[tuple[int, float, int, int]] = []
+    before = start
+    for sample, t, value in steps:
+        pieces.append((sample, t, before - value, before))
+        before = value
+    return pieces
+
+
+def _coarse(mask: np.ndarray, cells: int) -> np.ndarray:
+    """Which cells of a ``cells`` x ``cells`` grid the change touched."""
+    small = cv2.resize(mask.astype(np.float32), (cells, cells), interpolation=cv2.INTER_AREA)
+    return np.asarray(small > 0.02)
+
+
+def _interface_areas(grids: list[np.ndarray], settings: VideoSettings) -> list[NormBox]:
+    """Parts of the view that change along with most purchases: the interface.
+
+    A tower panel or an on-screen counter changes with nearly every purchase,
+    wherever the tower is -- though not always in the same few pixels, so the
+    count is kept per area of a coarse grid, and neighbouring busy areas are
+    merged into one rectangle. A tower's own spot changes only when that
+    tower is placed or upgraded, a small share of a whole match.
+    """
+    total = len(grids)
+    if total < settings.interface_min_purchases:
+        return []
+    needed = max(settings.interface_min_purchases, math.ceil(total * settings.interface_share))
+    busy = (np.sum(np.stack(grids), axis=0) >= needed).astype(np.uint8)
+    if not busy.any():
+        return []
+    # Join busy cells that touch or nearly touch: one panel, one rectangle.
+    joined = cv2.dilate(busy, np.ones((3, 3), np.uint8))
+    count, _, stats, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
+    cells = settings.interface_grid
+    areas: list[NormBox] = []
+    for label in range(1, count):
+        x, y = int(stats[label, cv2.CC_STAT_LEFT]), int(stats[label, cv2.CC_STAT_TOP])
+        w, h = int(stats[label, cv2.CC_STAT_WIDTH]), int(stats[label, cv2.CC_STAT_HEIGHT])
+        areas.append(NormBox(x / cells, y / cells, w / cells, h / cells))
+    return areas
+
+
+def _inside(point: NormPoint, box: NormBox) -> bool:
+    return box.x <= point.x <= box.x + box.width and box.y <= point.y <= box.y + box.height
+
+
+def _frame_time(capture: cv2.VideoCapture, index: int, fps: float, previous: float) -> float:
+    """Seconds into the video of the frame just grabbed.
+
+    From the frame's own timestamp: screen recordings are often variable frame
+    rate (macOS drops repeated frames), where frame N is not at N / fps.
+    Falls back to N / fps if the decoder reports no timestamp.
+    """
+    msec = float(capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+    t = msec / 1000.0 if msec > 0 or index == 0 else index / fps
+    return max(t, previous)
 
 
 # --- the whole pass --------------------------------------------------------------------
@@ -423,61 +582,70 @@ def analyze_video(
             "them on a frame of the video (the 'Teach' step) and try again."
         )
 
-    step = max(1, int(round(info.fps / max(0.5, settings.sample_fps))))
+    interval = 1.0 / max(0.5, settings.sample_fps)
     wave_stab, cash_stab = Stabilizer(3, 2), Stabilizer(3, 2)
-    raw_cash: deque[tuple[int, float, int | None]] = deque(maxlen=6)
+    raw_cash: deque[tuple[int, float, int | None]] = deque(maxlen=8)
     frames: dict[int, tuple[np.ndarray, np.ndarray]] = {}  # sample -> (small, thumbnail)
-    pending: list[tuple[int, Purchase]] = []
-    towers: dict[str, NormPoint] = {}
-    placement_costs: set[int] = set()
+    # (sample, purchase, use the frame of the drop itself as "after")
+    pending: list[tuple[int, Purchase, bool]] = []
+    seen: list[tuple[Purchase, list[tuple[NormPoint, float]], np.ndarray | None]] = []
     published_cash: int | None = None
     current_wave: int | None = None
     hud_mask: np.ndarray | None = None
     sample = -1
-    next_tower = 1
+    drops = 0
 
-    def resolve(index: int, purchase: Purchase) -> None:
-        nonlocal next_tower
+    def look(index: int, purchase: Purchase, exact: bool) -> None:
+        """Find what changed on screen at a purchase; classified at the end."""
         before2 = frames.get(index - 2) or frames.get(index - 1)
         before = frames.get(index - 1)
-        after = frames.get(index + 1) or frames.get(index)
+        # One of several purchases in quick succession: the frame after it
+        # already shows the next one, so compare with the frame of the drop.
+        after = frames.get(index) if exact else (frames.get(index + 1) or frames.get(index))
+        blobs: list[tuple[NormPoint, float]] = []
+        grid: np.ndarray | None = None
         if before is None or before2 is None or after is None or hud_mask is None:
-            purchase.kind = UNKNOWN
             purchase.note = "too close to the start or end of the video to see"
         else:
-            blobs = locate_new_object(before2[0], before[0], after[0], hud_mask, settings)
-            classify(purchase, blobs, towers, placement_costs, settings)
+            mask = change_mask(before2[0], before[0], after[0], hud_mask, settings)
+            blobs = find_blobs(mask, settings)
+            grid = _coarse(mask, settings.interface_grid)
             purchase.thumbnail = after[1]
-        if purchase.kind == PLACE:
-            purchase.tower_id = f"T{next_tower}"
-            next_tower += 1
-            assert purchase.position is not None
-            towers[purchase.tower_id] = purchase.position
-            placement_costs.add(purchase.cost)
-        analysis.purchases.append(purchase)
+        seen.append((purchase, blobs, grid))
 
+    frame_index = -1
+    last_t = 0.0
+    next_sample_t = 0.0
+    duration = info.duration_s
     try:
-        for frame_index in range(info.frame_count or 10**9):
+        while True:
             if should_stop is not None and should_stop():
                 analysis.warnings.append("Stopped before the end of the video.")
                 break
-            if frame_index % step:
-                if not capture.grab():
-                    break
-                continue
-            ok, frame = capture.read()
-            if not ok or frame is None:
+            # Until the video really ends, not until the reported frame count:
+            # for variable-frame-rate files that count is only an estimate.
+            if not capture.grab():
                 break
+            frame_index += 1
+            t = _frame_time(capture, frame_index, info.fps, last_t)
+            last_t = t
+            if t + 1e-6 < next_sample_t:
+                continue
+            next_sample_t += interval
+            if next_sample_t <= t:
+                next_sample_t = t + interval
+            ok, frame = capture.retrieve()
+            if not ok or frame is None:
+                continue
             sample += 1
             game = game_area(frame, box)
             grey = _small_colour(game, settings.work_width)
             if hud_mask is None:
-                hud_mask = _hud_mask(grey.shape[:2], calibration)
+                hud_mask = _hud_mask(grey.shape[:2], calibration, settings.ignore_boxes)
             thumb_height = int(round(game.shape[0] * settings.thumbnail_width / game.shape[1]))
             thumb = cv2.resize(game, (settings.thumbnail_width, max(1, thumb_height)))
             frames[sample] = (grey, thumb)
-            frames.pop(sample - 8, None)
-            t = frame_index / info.fps
+            frames.pop(sample - 10, None)
 
             wave = read_number(
                 crop_norm(game, calibration.wave.box), calibration.wave.classifier,  # type: ignore[arg-type]
@@ -497,43 +665,53 @@ def analyze_video(
             raw_cash.append((sample, t, cash))
             smoothed = cash_stab.push(cash)
             if published_cash is not None and smoothed is not None and smoothed < published_cash:
-                # Date the purchase to the first frame that showed the new
-                # figure, not the later frame where smoothing confirmed it --
-                # and measure it from the frame just before that, not from the
-                # smoothed value, which can be several frames (and several
-                # income ticks) old.
-                first = next((s for s, _, v in raw_cash if v == smoothed), sample)
-                when = next((tt for s, tt, _ in raw_cash if s == first), t)
-                earlier = [v for s, _, v in raw_cash if s < first and v is not None]
-                before = earlier[-1] if earlier and earlier[-1] > smoothed else published_cash
-                pending.append(
-                    (
-                        first,
-                        Purchase(
-                            t=when,
-                            wave=current_wave,
-                            cost=before - smoothed,
-                            cash_before=before,
-                        ),
+                drops += 1
+                pieces = _split_drop(list(raw_cash), published_cash, smoothed)
+                for number, (first, when, cost, before) in enumerate(pieces, start=1):
+                    purchase = Purchase(
+                        t=when, wave=current_wave, cost=cost, cash_before=before, drop=drops
                     )
-                )
+                    pending.append((first, purchase, number < len(pieces)))
             if smoothed is not None:
                 published_cash = smoothed
 
-            # Resolve purchases once the frame after them has been seen.
-            ready = [(i, p) for i, p in pending if i + 1 <= sample]
+            # Look at each purchase once the frame after it has been seen.
+            ready = [item for item in pending if item[0] + 1 <= sample]
             for item in ready:
                 pending.remove(item)
-                resolve(*item)
+                look(*item)
 
-            if progress is not None and info.frame_count:
-                progress(min(1.0, frame_index / info.frame_count))
+            if progress is not None and duration > 0:
+                progress(min(1.0, t / duration))
         for item in pending:
-            resolve(*item)
+            look(*item)
     finally:
         capture.release()
 
-    analysis.purchases.sort(key=lambda p: p.t)
+    seen.sort(key=lambda item: item[0].t)
+    interface = _interface_areas([grid for _, _, grid in seen if grid is not None], settings)
+    analysis.interface_areas = interface
+    for area in interface:
+        analysis.warnings.append(
+            f"Ignored an area of the screen ({area.x:.0%} across, {area.y:.0%} down): it "
+            "changed with most purchases, so it is most likely the interface, not a tower."
+        )
+    towers: dict[str, NormPoint] = {}
+    placement_costs: set[int] = set()
+    next_tower = 1
+    for purchase, blobs, _ in seen:
+        kept = [blob for blob in blobs if not any(_inside(blob[0], area) for area in interface)]
+        if purchase.note != "too close to the start or end of the video to see":
+            classify(purchase, kept, towers, placement_costs, settings)
+        if purchase.kind == PLACE:
+            purchase.tower_id = f"T{next_tower}"
+            next_tower += 1
+            assert purchase.position is not None
+            towers[purchase.tower_id] = purchase.position
+            placement_costs.add(purchase.cost)
+        analysis.purchases.append(purchase)
+    analysis.purchases = _fold_unseen_splits(analysis.purchases)
+
     if analysis.samples and analysis.readable_fraction < 0.5:
         analysis.warnings.append(
             f"Cash was readable in only {analysis.readable_fraction:.0%} of the video. Check "
@@ -545,6 +723,37 @@ def analyze_video(
             "was bought in this video."
         )
     return analysis
+
+
+def _fold_unseen_splits(purchases: list[Purchase]) -> list[Purchase]:
+    """Undo a split that nothing on screen supports.
+
+    A reading between two cash values is taken as a separate quick purchase;
+    if nothing visibly changed for it, it was more likely a misread, so its
+    cost goes back into the next purchase from the same drop.
+    """
+    result: list[Purchase] = []
+    carry: Purchase | None = None
+    for purchase in purchases:
+        if carry is not None and carry.drop == purchase.drop:
+            purchase.cost += carry.cost
+            purchase.cash_before = carry.cash_before
+        elif carry is not None:
+            result.append(carry)
+        carry = None
+        same_drop_follows = any(
+            other.drop == purchase.drop and other.t >= purchase.t and other is not purchase
+            for other in purchases
+        )
+        if purchase.drop and purchase.kind == UNKNOWN and not purchase.position and (
+            same_drop_follows
+        ):
+            carry = purchase
+            continue
+        result.append(purchase)
+    if carry is not None:
+        result.append(carry)
+    return result
 
 
 # --- turning the analysis into steps ---------------------------------------------------

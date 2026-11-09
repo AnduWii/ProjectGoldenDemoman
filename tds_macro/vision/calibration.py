@@ -16,12 +16,13 @@ from pathlib import Path
 import numpy as np
 
 from .capture import NormBox
-from .digits import DigitClassifier
+from .digits import DigitClassifier, upgrade_v1_template
 from .templates import DEFAULT_THRESHOLD, ScreenTemplate
 
 log = logging.getLogger(__name__)
 
-CALIBRATION_VERSION = 1
+# 2: digit templates are softened before matching (see digits.normalize_template).
+CALIBRATION_VERSION = 2
 CALIBRATION_FILE = "calibration.json"
 
 # UI screens loop mode needs.  "end_screen" tells us a match is over;
@@ -188,7 +189,29 @@ class Calibration:
                 search_box=NormBox.from_dict(search) if isinstance(search, dict) else None,
                 threshold=float(stored.get("threshold", DEFAULT_THRESHOLD)),
             )
+        if version < 2:
+            _upgrade_digit_templates(calibration)
         return calibration
+
+
+def _upgrade_digit_templates(calibration: Calibration) -> None:
+    """Bring format-1 digit templates up to date (see upgrade_v1_template)."""
+    upgraded = 0
+    for region in (calibration.wave, calibration.cash):
+        for label, examples in region.classifier.templates.items():
+            kept = []
+            for example in examples:
+                renewed = upgrade_v1_template(example)
+                if renewed is not None:
+                    kept.append(renewed)
+                    upgraded += 1
+            region.classifier.templates[label] = kept
+        region.classifier.templates = {
+            label: examples for label, examples in region.classifier.templates.items() if examples
+        }
+    calibration.version = CALIBRATION_VERSION
+    if upgraded:
+        log.info("updated %d learned digit(s) to the current reading method", upgraded)
 
 
 def _load_classifier(path: Path, min_confidence: float) -> DigitClassifier:

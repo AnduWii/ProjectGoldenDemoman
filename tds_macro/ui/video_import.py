@@ -67,7 +67,14 @@ from .theme import ERROR, OK, TEXT_DIM, WARN
 
 log = logging.getLogger(__name__)
 
-KIND_LABELS = {PLACE: "Placed a tower", UPGRADE: "Upgraded a tower", SKIP: "Ignore this one"}
+# Every kind a purchase can have must be listed: a kind missing here would
+# show as the first entry ("Placed a tower") while being left out on create.
+KIND_LABELS = {
+    PLACE: "Placed a tower",
+    UPGRADE: "Upgraded a tower",
+    UNKNOWN: "Not sure -- left out unless you choose",
+    SKIP: "Ignore this one",
+}
 
 
 def _status(label: QLabel, text: str, colour: str) -> None:
@@ -265,6 +272,9 @@ class VideoImportDialog(QDialog):
         self.info: VideoInfo | None = None
         self.frame: np.ndarray | None = None
         self.game_box: NormBox = WHOLE_FRAME
+        # Parts of the game area to leave out of tower finding (a webcam, a
+        # chat box, the tower panel), relative to the game area.
+        self.ignore_boxes: list[NormBox] = []
         # A private copy: teaching the video's HUD must not overwrite live
         # calibration unless the user asks.
         self.calibration = copy.deepcopy(controller.calibration)
@@ -274,6 +284,10 @@ class VideoImportDialog(QDialog):
         self._worker: AnalysisWorker | None = None
         self._price_rows: list[tuple[int, list[Purchase], QSpinBox, QComboBox]] = []
         self._selected: Purchase | None = None
+        self._cancelled = False
+        # Set once the user starts teaching this video's wave and cash, so a
+        # second visit to Teach continues instead of starting over.
+        self._teaching = False
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._setup_page())
@@ -317,6 +331,16 @@ class VideoImportDialog(QDialog):
         mark_area.clicked.connect(self._mark_area)
         reset_area = QPushButton("Whole video")
         reset_area.clicked.connect(self._reset_area)
+        self.ignore_label = QLabel("Ignored areas: none")
+        ignore = QPushButton("Ignore an area...")
+        ignore.setToolTip(
+            "Drag a box over anything that changes when something is bought but is not a "
+            "tower: the tower panel, a webcam, chat. Most of the interface is found "
+            "automatically in longer videos."
+        )
+        ignore.clicked.connect(self._add_ignore)
+        clear_ignore = QPushButton("Clear")
+        clear_ignore.clicked.connect(self._clear_ignore)
 
         self.hud_label = QLabel()
         self.hud_label.setWordWrap(True)
@@ -349,6 +373,10 @@ class VideoImportDialog(QDialog):
         area.addWidget(self.area_label, 1)
         area.addWidget(mark_area)
         area.addWidget(reset_area)
+        ignored = QHBoxLayout()
+        ignored.addWidget(self.ignore_label, 1)
+        ignored.addWidget(ignore)
+        ignored.addWidget(clear_ignore)
         hud = QHBoxLayout()
         hud.addWidget(self.hud_label, 1)
         hud.addWidget(teach)
@@ -363,6 +391,7 @@ class VideoImportDialog(QDialog):
         layout.addLayout(scrub)
         layout.addWidget(self.preview, 1)
         layout.addLayout(area)
+        layout.addLayout(ignored)
         layout.addLayout(hud)
         layout.addWidget(self.setup_status)
         layout.addLayout(go)
@@ -428,6 +457,7 @@ class VideoImportDialog(QDialog):
         )
         if dialog.exec() == PickerDialog.DialogCode.Accepted and dialog.result_box:
             self.game_box = dialog.result_box
+            self._clear_ignore()
             self.area_label.setText(
                 f"Game area: {self.game_box.width:.0%} x {self.game_box.height:.0%} of the video"
             )
@@ -436,7 +466,35 @@ class VideoImportDialog(QDialog):
     def _reset_area(self) -> None:
         self.game_box = WHOLE_FRAME
         self.area_label.setText("Game area: the whole video")
+        # Ignored areas are relative to the game area, so they go with it.
+        self._clear_ignore()
         self._check_hud()
+
+    def _add_ignore(self) -> None:
+        if self.frame is None:
+            return
+        dialog = PickerDialog(
+            numpy_to_qimage(game_area(self.frame, self.game_box)),
+            "Ignore an area",
+            "Drag a box over something that is not a tower: the tower panel, a webcam, chat.",
+            mode="region",
+            boxes=[("ignored", box) for box in self.ignore_boxes],
+            parent=self,
+        )
+        if dialog.exec() == PickerDialog.DialogCode.Accepted and dialog.result_box:
+            self.ignore_boxes.append(dialog.result_box)
+            self._show_ignored()
+
+    def _clear_ignore(self) -> None:
+        self.ignore_boxes = []
+        self._show_ignored()
+
+    def _show_ignored(self) -> None:
+        count = len(self.ignore_boxes)
+        self.ignore_label.setText(f"Ignored areas: {count}" if count else "Ignored areas: none")
+
+    def _settings(self) -> VideoSettings:
+        return VideoSettings(game_box=self.game_box, ignore_boxes=list(self.ignore_boxes))
 
     def _check_hud(self) -> None:
         """Try reading this frame with the current wave/cash set-up."""
@@ -480,10 +538,12 @@ class VideoImportDialog(QDialog):
         if self.path is None or self.info is None:
             _status(self.setup_status, "Choose a video first.", WARN)
             return
-        if not self.calibration.hud_ready:
+        if not self._teaching and not self.calibration.hud_ready:
             # Start the video's set-up from scratch rather than editing a live
-            # calibration made for a different screen.
+            # calibration made for a different screen -- but only the first
+            # time, so digits taught on an earlier visit are kept.
             self.calibration = Calibration()
+        self._teaching = True
         VideoHudDialog(
             self.path, self.info, self.game_box, self.calibration, self._seconds(), self
         ).exec()
@@ -502,12 +562,11 @@ class VideoImportDialog(QDialog):
             )
             return
         self.analyze_button.setEnabled(False)
+        self._cancelled = False
         self.progress.setVisible(True)
         self.progress.setValue(0)
         _status(self.setup_status, "Watching the video -- long ones take a while.", TEXT_DIM)
-        worker = AnalysisWorker(
-            self.path, self.calibration, VideoSettings(game_box=self.game_box)
-        )
+        worker = AnalysisWorker(self.path, self.calibration, self._settings())
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -516,6 +575,7 @@ class VideoImportDialog(QDialog):
         worker.failed.connect(self._analysis_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
         self._worker, self._thread = worker, thread
         thread.start()
 
@@ -523,18 +583,44 @@ class VideoImportDialog(QDialog):
         """Synchronous analysis, for tests and scripted use."""
         assert self.path is not None
         try:
-            settings = VideoSettings(game_box=self.game_box)
-            result = analyze_video(self.path, self.calibration, settings)
+            result = analyze_video(self.path, self.calibration, self._settings())
         except VideoError as exc:
             self._analysis_failed(str(exc))
             return
         self._analysis_done(result)
 
-    def _cancel(self) -> None:
-        if self._worker is not None and self._thread is not None and self._thread.isRunning():
+    def _analysis_running(self) -> bool:
+        return self._thread is not None and self._thread.isRunning()
+
+    def _stop_analysis(self) -> None:
+        """Stop a running analysis and wait for its thread to finish.
+
+        The analysis checks for this between frames, so the wait is short. A
+        thread must never be left running when the window goes away: it would
+        keep decoding the video in the background, and Qt aborts the whole
+        app if a running thread is destroyed.
+        """
+        if self._worker is not None and self._analysis_running():
+            self._cancelled = True
             self._worker.cancel()
+        if self._thread is not None:
+            self._thread.quit()
+            self._thread.wait()
+
+    def _cancel(self) -> None:
+        if self._analysis_running():
+            self._stop_analysis()
+            self.progress.setVisible(False)
+            self.analyze_button.setEnabled(True)
+            _status(self.setup_status, "Stopped.", TEXT_DIM)
             return
         self.reject()
+
+    def done(self, result: int) -> None:
+        """Every way the window closes -- Create, Cancel, Esc, the close
+        button -- comes through here."""
+        self._stop_analysis()
+        super().done(result)
 
     def _analysis_failed(self, message: str) -> None:
         self.progress.setVisible(False)
@@ -544,7 +630,7 @@ class VideoImportDialog(QDialog):
     def _analysis_done(self, result: object) -> None:
         self.progress.setVisible(False)
         self.analyze_button.setEnabled(True)
-        if not isinstance(result, VideoAnalysis):
+        if self._cancelled or not isinstance(result, VideoAnalysis):
             return
         self.analysis = result
         self._fill_review()
@@ -818,6 +904,13 @@ class VideoImportDialog(QDialog):
         path = self.controller.adopt_strategy(strategy, "video")
         if path is None:
             return
+        unclear = sum(1 for p in self.analysis.purchases if p.kind == UNKNOWN)
+        if unclear:
+            self.controller.emit_log(
+                "warn",
+                f"{unclear} unclear purchase(s) from the video were left out. Add them in "
+                "the editor if they matter.",
+            )
         problems = strategy.validate()
         if problems:
             self.controller.emit_log("warn", "Imported with problems: " + "; ".join(problems))

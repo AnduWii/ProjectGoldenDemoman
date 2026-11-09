@@ -267,6 +267,24 @@ def normalize_template(glyph: np.ndarray) -> np.ndarray:
     return vector / norm
 
 
+
+def upgrade_v1_template(vector: np.ndarray) -> np.ndarray | None:
+    """Re-normalize a glyph template saved by calibration format 1.
+
+    Format 1 stored ``(mask - mean) / norm`` of the fitted glyph, without the
+    softening :func:`normalize_template` now applies. Comparing those with
+    softened readings would lower every score -- enough to push thin glyphs
+    like "1" under the confidence floor and silently stop wave reading. The
+    fitted glyph was a pure on/off mask, so its positive entries are exactly
+    the "on" pixels: the original shape is recovered without loss and
+    normalized the current way. Returns None for a vector of the wrong size.
+    """
+    if vector.size != GLYPH_SIZE[0] * GLYPH_SIZE[1]:
+        return None
+    mask = np.asarray(vector, dtype=np.float32).reshape(GLYPH_SIZE) > 0
+    return normalize_template(mask)
+
+
 @dataclass
 class DigitClassifier:
     """Labelled glyph templates plus nearest-match lookup.

@@ -241,6 +241,11 @@ class Recorder:
         if opened is not None:
             step, pressed_at = opened
             step.hold_ms = max(step.hold_ms, event.t_ms - pressed_at)
+            if self.steps and self.steps[-1] is step:
+                # Replay holds the key for hold_ms before moving on, so the
+                # next gap is measured from the release -- otherwise the hold
+                # would be waited out twice.
+                self._last_event_ms = max(self._last_event_ms or 0, event.t_ms)
 
     @staticmethod
     def _recordable(key: str) -> bool:
@@ -325,8 +330,16 @@ class Recorder:
             return
         button, started, start, path = self._press
         self._press = None
-        if release is not None and release.pos is not None:
-            path.append(DragPoint(max(0, release.t_ms - started), release.pos))
+        if release is not None:
+            held_for = max(0, release.t_ms - started)
+            if len(path) > 1:
+                # Hold the last point until the release. The release's own
+                # position is not used: with the cursor locked for a camera
+                # turn it is back where the drag began, and replaying it would
+                # turn the camera straight back.
+                path.append(DragPoint(held_for, path[-1].position))
+            elif release.pos is not None:
+                path.append(DragPoint(held_for, release.pos))
         moved = max(point.position.distance_to(start) for point in path)
         if moved < self.options.drag_threshold:
             self._emit_click(start, button, started)
@@ -426,7 +439,11 @@ class Recorder:
             slot, pressed_at = pending
             key = self.keybinds.slot_key(slot)
             if key:
-                self._emit_key(key, pressed_at)
+                # Other steps may already have been emitted after the press
+                # (a camera turn, a zoom). Placing it at its original time
+                # would put it after them while moving the clock backwards,
+                # which turns into a spurious long Wait later on.
+                self._emit_key(key, max(pressed_at, self._last_event_ms or pressed_at))
 
     def _emit_place(self, slot: int, position: NormPoint, t_ms: int) -> None:
         self._flush_pending_click()

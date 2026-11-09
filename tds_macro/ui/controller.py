@@ -27,7 +27,7 @@ from PySide6.QtWidgets import QApplication
 from ..config import Settings, SettingsStore
 from ..input import mac_quartz
 from ..input import platform as host
-from ..input.coords import NormPoint, Rect
+from ..input.coords import NormPoint, Rect, remap_world_point
 from ..input.keys import KeyParseError, parse_hotkey
 from ..input.sendinput import InputBackend, MouseButton, NullBackend
 from ..input.window import WindowInfo, query_dpi_awareness, set_dpi_awareness
@@ -674,14 +674,30 @@ class AppController(QObject):
         self.emit_log("info", f"Saved '{self.strategy.name}' to {path}")
         return True
 
-    def placement_points(self) -> list[tuple[str, NormPoint]]:
+    def placement_points(self, on_screen: bool = False) -> list[tuple[str, NormPoint]]:
+        """Tower spots, as stored -- or, with ``on_screen``, where they land in
+        the game view right now (see :meth:`world_to_view`)."""
         from ..strategy.steps import Place
 
         return [
-            (step.tower_id, step.position)
+            (step.tower_id, self.world_to_view(step.position) if on_screen else step.position)
             for step in self.strategy.steps
             if isinstance(step, Place)
         ]
+
+    def world_to_view(self, point: NormPoint) -> NormPoint:
+        """A stored tower spot, as it falls in the current game view.
+
+        Tower spots are stored in the shape of view they were recorded on (a
+        16:9 video, say) and moved at replay to the same map spot on this
+        screen. Anything shown on, or picked from, a live screenshot has to
+        make the same conversion, or a spot picked by hand gets moved twice.
+        """
+        return remap_world_point(point, self.strategy.aspect_ratio, self.client_aspect())
+
+    def view_to_world(self, point: NormPoint) -> NormPoint:
+        """The inverse of :meth:`world_to_view`, for a spot picked on screen."""
+        return remap_world_point(point, self.client_aspect(), self.strategy.aspect_ratio)
 
     # -- shutdown ----------------------------------------------------------------
     def shutdown(self) -> None:

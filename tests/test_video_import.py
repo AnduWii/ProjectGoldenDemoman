@@ -266,3 +266,77 @@ def test_the_video_can_teach_wave_and_cash_reading(
     finally:
         teacher.deleteLater()
         qt_app.processEvents()
+
+
+# --- review fixes ----------------------------------------------------------------------
+def test_an_unclear_purchase_says_so_instead_of_pretending_to_be_placed(
+    dialog: VideoImportDialog, controller: AppController, match_video: Path
+) -> None:
+    from tds_macro.vision.video import UNKNOWN
+
+    analysed(dialog, match_video)
+    assert dialog.analysis is not None
+    dialog.analysis.purchases[3].kind = UNKNOWN
+    dialog._refresh_list()
+    dialog.purchase_list.setCurrentRow(3)
+    assert "left out" in dialog.kind_combo.currentText()
+    logs: list[tuple[str, str]] = []
+    controller.logged.connect(lambda level, message: logs.append((level, message)))
+    dialog._create()
+    assert len([s for s in controller.strategy.steps if isinstance(s, Place)]) == 2
+    assert any(level == "warn" and "1 unclear purchase(s)" in text for level, text in logs)
+
+
+def test_closing_the_window_stops_a_running_analysis(
+    dialog: VideoImportDialog, match_video: Path, qt_app: QApplication
+) -> None:
+    dialog.load_video(match_video)
+    dialog.calibration = match_calibration()
+    dialog._analyze()
+    assert dialog._analysis_running()
+    dialog.reject()  # the close button and Esc both end up here
+    assert dialog._thread is not None and not dialog._thread.isRunning()
+    qt_app.processEvents()
+    assert dialog.analysis is None, "a cancelled analysis must not open the review"
+
+
+def test_cancel_during_analysis_stops_it_and_stays_on_set_up(
+    dialog: VideoImportDialog, match_video: Path, qt_app: QApplication
+) -> None:
+    dialog.load_video(match_video)
+    dialog.calibration = match_calibration()
+    dialog._analyze()
+    dialog._cancel()
+    qt_app.processEvents()
+    assert not dialog._analysis_running()
+    assert dialog.pages.currentIndex() == 0 and dialog.analyze_button.isEnabled()
+    assert "Stopped" in dialog.setup_status.text()
+    assert dialog.analysis is None
+
+
+def test_teaching_a_second_time_continues_where_it_left_off(
+    dialog: VideoImportDialog, match_video: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tds_macro.ui import video_import
+
+    monkeypatch.setattr(video_import.VideoHudDialog, "exec", lambda _self: 0)
+    dialog.load_video(match_video)
+    dialog._teach()
+    dialog.calibration.wave.box = WAVE_BOX  # taught the wave, not the cash yet
+    dialog._teach()
+    assert dialog.calibration.wave.box == WAVE_BOX
+
+
+def test_ignored_areas_reach_the_analysis_and_follow_the_game_area(
+    dialog: VideoImportDialog, match_video: Path
+) -> None:
+    from tds_macro.vision.capture import NormBox
+
+    dialog.load_video(match_video)
+    panel = NormBox(0.8, 0.2, 0.15, 0.3)
+    dialog.ignore_boxes.append(panel)
+    dialog._show_ignored()
+    assert dialog._settings().ignore_boxes == [panel]
+    assert "1" in dialog.ignore_label.text()
+    dialog._reset_area()  # relative to the game area, so they go with it
+    assert dialog._settings().ignore_boxes == []
