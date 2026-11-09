@@ -175,9 +175,12 @@ def test_settings_dialog_commits_to_the_real_settings(
 
 
 def test_wizard_builds_all_pages(controller: AppController, qt_app: QApplication) -> None:
+    from tds_macro.input import platform as host
+
     wizard = SetupWizard(controller)
     titles = [wizard.page(i).title() for i in wizard.pageIds()]
-    assert len(titles) == 6
+    # A Mac gets one extra page for the Privacy & Security permissions.
+    assert len(titles) == (7 if controller.platform == host.MAC else 6)
     assert "Welcome" in titles[0]
     wizard.deleteLater()
     qt_app.processEvents()
