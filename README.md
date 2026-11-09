@@ -36,7 +36,7 @@ Use it on an account you are willing to lose.
 
 **What has and has not been verified.** The coordinate maths, the strategy
 engine, the recorder, the HUD reader, the loop controller and the video importer
-are covered by 0 automated tests that run on every commit. On `windows-latest`, CI also checks
+are covered by 341 automated tests that run on every commit. On `windows-latest`, CI also checks
 per-monitor DPI awareness, claims and releases a real global hotkey, captures
 the screen, and **launches the built `TDSMacro.exe`**. On macOS (Apple Silicon
 and Intel), CI checks that every macOS framework call the app makes exists,
@@ -541,7 +541,7 @@ tds_macro/
   ui/        PySide6: simple screen, advanced editor, pickers, settings,
              wizard, video import
 tools/       win_check.py and mac_check.py diagnostics
-tests/       0 tests, no Windows or Mac required
+tests/       341 tests, no Windows or Mac required
 ```
 
 A few decisions worth knowing if you intend to change it:
