@@ -1,12 +1,15 @@
 # Runtime dependencies.
 #
 # Pinned with a compatible range rather than an exact version, so a slightly
-# older wheel still resolves. Everything here installs on any platform, which is
-# what lets the test suite run on Linux CI; the Windows-specific work is done
-# through ctypes, which is in the standard library.
+# older wheel still resolves. Windows-specific work is done through ctypes (in
+# the standard library); macOS-specific work goes through pyobjc, which only
+# installs on a Mac -- hence the platform markers below.
 #
 # pywin32 is deliberately NOT a dependency: see "Stack notes" in README.md.
 PySide6>=6.8,<7
 mss>=9.0,<11
 numpy>=2.1,<3
 opencv-python-headless>=4.10,<6
+pyobjc-framework-Quartz>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.3 ; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices>=10.3 ; sys_platform == "darwin"

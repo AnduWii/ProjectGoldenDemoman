@@ -371,3 +371,37 @@ def test_end_screen_detection_turns_on_whenever_the_template_exists(
     controller.start_playback(dry_run=True)
     assert controller.hud.detect_end_screen is True
     controller.stop_playback()
+
+
+def test_buttons_show_the_configured_hotkeys(window: MainWindow) -> None:
+    """They read F6/F7/F8 regardless of settings, which was wrong on every Mac."""
+    window.controller.settings.hotkeys.play = "Ctrl+Shift+F9"
+    window.controller.settings.hotkeys.stop = "Ctrl+Shift+F10"
+    window._refresh_button_labels()
+    assert window.start_button.text() == "Start  (Ctrl+Shift+F9)"
+    assert window.stop_button.text() == "STOP  (Ctrl+Shift+F10)"
+
+
+def test_the_wizard_asks_for_mac_permissions_on_a_mac(controller: AppController) -> None:
+    from tds_macro.input import platform as host
+    from tds_macro.ui.wizard import MacPermissionsPage
+
+    controller.platform = host.MAC
+    wizard = SetupWizard(controller)
+    pages = [wizard.page(i) for i in wizard.pageIds()]
+    permission_pages = [p for p in pages if isinstance(p, MacPermissionsPage)]
+    assert len(permission_pages) == 1
+    page = permission_pages[0]
+    page.initializePage()
+    assert set(page.rows) == {"accessibility", "screen_recording", "input_monitoring"}
+    wizard.deleteLater()
+
+
+def test_the_wizard_skips_mac_permissions_elsewhere(controller: AppController) -> None:
+    from tds_macro.input import platform as host
+    from tds_macro.ui.wizard import MacPermissionsPage
+
+    controller.platform = host.WINDOWS
+    wizard = SetupWizard(controller)
+    assert not any(isinstance(wizard.page(i), MacPermissionsPage) for i in wizard.pageIds())
+    wizard.deleteLater()

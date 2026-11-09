@@ -1,13 +1,18 @@
 # TDS Macro
 
-A Windows desktop app that records and replays strategies in the Roblox game
-**Tower Defense Simulator**.
+A desktop app for **Windows and macOS** that records and replays strategies in
+the Roblox game **Tower Defense Simulator**.
 
 It works entirely from the outside: your mouse and keyboard are simulated through
-the documented Windows `SendInput` API, and the game is read from screenshots. It
-does **not** inject code into Roblox, attach a debugger, read the game's memory,
-load a DLL, or use an executor. It needs no administrator rights, installs
-nothing, edits no registry keys, and writes only inside its own folder.
+the operating system's own input API (`SendInput` on Windows, Quartz events on
+macOS), and the game is read from screenshots. It does **not** inject code into
+Roblox, attach a debugger, read the game's memory, load a DLL, or use an
+executor. It needs no administrator rights, installs nothing, edits no registry
+keys, and writes only inside its own folder.
+
+**On a Mac** there is one unavoidable exception: macOS will not let *any* app
+click, type or read another app's window until you switch it on yourself in
+**System Settings → Privacy & Security** — see [On a Mac](#on-a-mac).
 
 ---
 
@@ -23,13 +28,15 @@ in this category can promise you won't be banned.
 Use it on an account you are willing to lose.
 
 **What has and has not been verified.** The coordinate maths, the strategy
-engine, the recorder, the HUD reader and the loop controller are covered by 229
+engine, the recorder, the HUD reader and the loop controller are covered by 264
 automated tests that run on every commit. On `windows-latest`, CI also checks
 per-monitor DPI awareness, claims and releases a real global hotkey, captures
-the screen, and **launches the built `TDSMacro.exe`** and checks that it starts
-and shuts down cleanly. What has **never been run against Roblox itself** is
-`SendInput` actually reaching the game, and template matching against the real
-TDS HUD and lobby.
+the screen, and **launches the built `TDSMacro.exe`**. On macOS (Apple Silicon
+and Intel), CI checks that every macOS framework call the app makes exists,
+builds real input events, and **launches the built `TDSMacro.app`**. What has
+**never been run against Roblox itself** is input actually reaching the game on
+either platform, and template matching against the real TDS HUD and lobby. On a
+Mac that includes the permission prompts, which no CI machine can answer.
 Run the setup wizard, use Dry run for your first replay, and see
 [Troubleshooting](#troubleshooting) when something is off.
 
@@ -37,7 +44,7 @@ Run the setup wizard, use Dry run for your first replay, and see
 
 ## Getting started
 
-### Option A — run the built app
+### Option A — run the built app (Windows)
 
 1. Download `TDSMacro-<version>-windows.zip` from the Actions artifacts (or build
    it yourself, below) and unzip it anywhere — Desktop, a games folder, a USB
@@ -49,6 +56,47 @@ Run the setup wizard, use Dry run for your first replay, and see
 Windows may warn you about an unrecognised app. That is SmartScreen reacting to
 an unsigned executable, which this is. Everything it does is in this repository
 if you would rather read it than trust it.
+
+### On a Mac
+
+Which download you need depends on your Mac's chip: Apple menu → **About This
+Mac**. "Chip: Apple M…" means **arm64**; "Processor: Intel" means **x86_64**.
+
+1. From the Actions artifacts, download **TDSMacro-mac-arm64** (or
+   **TDSMacro-mac-x86_64**). Double-click the downloaded zip, then double-click
+   the `TDSMacro-…-mac-….zip` inside it. Move the resulting **TDSMacro** folder
+   somewhere permanent, such as Documents — settings are saved beside the app.
+2. **First launch.** The app is not signed by Apple, so macOS refuses to open it
+   the first time. Double-click **TDSMacro**, press *Done* on the warning, then
+   go to System Settings → Privacy & Security, scroll down and press **Open
+   Anyway** beside the TDS Macro message. You only do this once. (If you would
+   rather not, run `xattr -dr com.apple.quarantine` followed by a space and the
+   TDSMacro.app dragged into Terminal — that removes the download flag from the
+   file instead.)
+3. In Roblox, turn full screen off from inside the game: **Esc → Settings →
+   Fullscreen: Off**. On a MacBook, F11 is a volume key, not Roblox's
+   full-screen toggle.
+4. Follow the wizard. Its **Allow TDS Macro on your Mac** page has a button for
+   each permission; each one opens the right pane in System Settings, where you
+   switch **TDS Macro** on:
+
+   | Permission | Why |
+   | --- | --- |
+   | **Accessibility** | to click and press keys in Roblox — without it, macOS silently discards every input the app sends |
+   | **Screen Recording** | to see the Roblox window — without it, screenshots show only your wallpaper |
+   | **Input Monitoring** | for the hotkeys and for recording your moves |
+
+   After switching on Screen Recording or Input Monitoring, **quit and reopen
+   TDS Macro**; macOS only applies those to a fresh launch. You can switch any of
+   them off again whenever you like. These are the only system changes the app
+   needs, and it cannot make them itself.
+
+**Mac hotkeys** are **Ctrl+Option+R** (record), **Ctrl+Option+P** (play) and
+**Ctrl+Option+S** (stop), because F6–F8 are media keys on a Mac keyboard. You
+can change them in Settings. Wherever this README says F6, F7 or F8, use these.
+
+If you rebuild or update the app, macOS may ask for the permissions again: they
+are tied to the exact build.
 
 ### Option B — run from source
 
@@ -78,19 +126,21 @@ python -m tds_macro --dry-run --verbose
 | `--no-wizard` | Skip the first-run wizard |
 | `--self-test MS` | Build the UI, run for MS milliseconds, exit (used by CI) |
 
-### Building the Windows bundle
+### Building the app
 
-On Windows, with `pip install -r requirements-dev.txt`:
+On Windows (or a Mac), with `pip install -r requirements-dev.txt`:
 
 ```bash
 python build/build.py
 ```
 
-That produces `build/dist/TDSMacro/` and a zip beside it. Add `--onefile` for a
-single `.exe` as well — handier to send to a friend, but it self-extracts on
-every launch (several seconds) and antivirus flags single-file PyInstaller
-binaries much more readily. PyInstaller does not cross-compile, so this must run
-on Windows.
+On Windows that produces `build/dist/TDSMacro/` and a zip beside it. Add
+`--onefile` for a single `.exe` as well — handier to send to a friend, but it
+self-extracts on every launch (several seconds) and antivirus flags single-file
+PyInstaller binaries much more readily. On a Mac it produces
+`build/dist/TDSMacro.app` and a zip made with `ditto`, which keeps the bundle's
+symlinks and permissions intact. PyInstaller does not cross-compile, so build on
+the platform you are building for.
 
 ---
 
@@ -331,18 +381,29 @@ instead and the log says so. A corrupt settings file is moved aside as
 
 ## Troubleshooting
 
-**Start the diagnostics first:**
+**Start the diagnostics first.** On Windows:
 
 ```bash
 python tools/win_check.py
 ```
 
-That checks structure sizes, DPI awareness, your monitor layout, window
-enumeration, hotkey registration and screen capture. It sends no input and does
-not need Roblox running.
+On a Mac (from source):
+
+```bash
+python3 tools/mac_check.py
+```
+
+These check the platform APIs, your monitor layout, window detection, hotkeys
+and screen capture — and on a Mac, which of the three permissions are on. They
+send no input and do not need Roblox running.
 
 | Symptom | Cause and fix |
 | --- | --- |
+| **Mac:** the macro runs but nothing happens in Roblox | Accessibility is off. System Settings → Privacy & Security → Accessibility → switch on TDS Macro. The log says so explicitly. |
+| **Mac:** the screenshot shows only the wallpaper | Screen Recording is off, or was switched on without restarting TDS Macro. |
+| **Mac:** hotkeys do nothing | Input Monitoring is off, or TDS Macro needs reopening after you switched it on. |
+| **Mac:** "Roblox window not found" | Roblox is minimized, or full screen on its own desktop. Turn full screen off inside the game (Esc → Settings → Fullscreen: Off). |
+| **Mac:** permissions were on, and stopped working | You updated or rebuilt the app; macOS ties permissions to the exact build. Switch them off and on again. |
 | "Roblox window not found" | Roblox isn't running, is minimized, or is in fullscreen-exclusive mode. Switch to borderless/windowed, then **Tools → Re-find Roblox window**. After a Roblox update changes its window class, pick the window yourself in the wizard. |
 | Nothing happens when playback starts | Roblox must be the *focused* window. Click on Roblox, then trigger playback with the hotkey rather than the on-screen button. |
 | Clicks land in the wrong place | Almost always DPI. Check **Help → About** says *per-monitor DPI aware v2*. If it says anything else, report it with your Windows version. Also re-check that the app found the right window — the client area, not a wrapper. |
@@ -367,15 +428,16 @@ panel shows the same thing with timestamps.
 
 ```
 tds_macro/
-  input/     Win32: coordinates, key tables, SendInput, window handling,
-             global hotkeys, the recorder's low-level hooks
+  input/     coordinates and key tables; Windows (SendInput, RegisterHotKey,
+             low-level hooks) and macOS (Quartz events, event taps, window
+             list, permissions) behind one platform factory
   vision/    screen capture, HUD calibration, digit recognition, template
              matching
   strategy/  step model and JSON format, playback engine, recorder, loop
              controller
   ui/        PySide6: main window, step editor, pickers, settings, wizard
-tools/       win_check.py diagnostics
-tests/       229 tests, no Windows required
+tools/       win_check.py and mac_check.py diagnostics
+tests/       264 tests, no Windows or Mac required
 ```
 
 A few decisions worth knowing if you intend to change it:
@@ -449,7 +511,10 @@ QT_QPA_PLATFORM=offscreen pytest -q
 CI runs lint, types and tests on Linux, then on `windows-latest` runs the suite
 again (where the Win32 modules import for real), runs `tools/win_check.py`, boots
 the GUI from source with `--self-test`, builds the bundle, **launches the built
-exe** with `--self-test`, and only then uploads it.
+exe** with `--self-test`, and only then uploads it. The macOS jobs (Apple Silicon
+and Intel) do the same with `tools/mac_check.py` and the built `.app`, and also
+confirm the bundle can load the macOS frameworks — without them it would start
+but silently do nothing.
 
 ---
 

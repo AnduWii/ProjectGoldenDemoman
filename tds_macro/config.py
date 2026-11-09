@@ -173,13 +173,27 @@ class Timing:
         )
 
 
+# On a Mac keyboard F6-F8 are media keys (keyboard brightness, previous track,
+# play/pause) unless the user changes a system setting, so the Mac defaults use
+# a modifier combination instead.
+DEFAULT_HOTKEYS = {
+    "windows": {"record": "F6", "play": "F7", "stop": "F8"},
+    "mac": {"record": "Ctrl+Option+R", "play": "Ctrl+Option+P", "stop": "Ctrl+Option+S"},
+}
+
+
+def default_hotkey(action: str, platform: str | None = None) -> str:
+    family = "mac" if (platform or sys.platform) == "darwin" else "windows"
+    return DEFAULT_HOTKEYS[family][action]
+
+
 @dataclass
 class Hotkeys:
-    """Global hotkeys.  Defaults match the brief; all are user-editable."""
+    """Global hotkeys. Defaults depend on the platform; all are user-editable."""
 
-    record: str = "F6"
-    play: str = "F7"
-    stop: str = "F8"
+    record: str = field(default_factory=lambda: default_hotkey("record"))
+    play: str = field(default_factory=lambda: default_hotkey("play"))
+    stop: str = field(default_factory=lambda: default_hotkey("stop"))
 
     def as_map(self) -> dict[str, str]:
         return {"record": self.record, "play": self.play, "stop": self.stop}
@@ -334,14 +348,32 @@ def _is_writable(folder: Path) -> bool:
         return False
 
 
-def app_dir() -> Path:
-    """Folder the app is running from (next to the exe when frozen)."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
+def app_dir(executable: str | None = None, frozen: bool | None = None) -> Path:
+    """Folder the app is running from: beside the exe, or beside the .app.
+
+    On macOS the executable lives at TDSMacro.app/Contents/MacOS/TDSMacro.
+    Settings go beside the .app, never inside it: writing into the bundle
+    invalidates its code signature, after which macOS can refuse to open it
+    and forgets the privacy permissions the user granted.
+    """
+    is_frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    if not is_frozen:
+        return Path(__file__).resolve().parent.parent
+    exe = Path(executable or sys.executable).resolve()
+    for parent in exe.parents:
+        if parent.suffix == ".app":
+            return parent.parent
+    return exe.parent
 
 
-def fallback_dir() -> Path:
+def fallback_dir(platform: str | None = None) -> Path:
+    """Where settings go when the app's own folder is read-only.
+
+    On a Mac that includes every launch straight from Downloads: macOS runs a
+    quarantined app from a randomized read-only copy ("app translocation").
+    """
+    if (platform or sys.platform) == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_FOLDER_NAME
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME")
     if base:
         return Path(base) / APP_FOLDER_NAME

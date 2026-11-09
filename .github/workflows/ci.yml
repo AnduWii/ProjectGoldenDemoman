@@ -119,3 +119,75 @@ jobs:
           path: build/dist/*.zip
           if-no-files-found: error
           retention-days: 30
+
+  macos:
+    name: Test and build (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest    # Apple Silicon (M1 and later)
+            arch: arm64
+          - runner: macos-15-intel  # Intel Macs
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+
+      # Checks every macOS framework symbol the app calls actually exists, and
+      # builds (without posting) real Quartz events. Permissions are reported,
+      # not required: a CI runner cannot grant them.
+      - name: macOS integration check
+        run: python tools/mac_check.py
+
+      - name: Start the GUI from source and shut it down
+        run: |
+          cfg="$RUNNER_TEMP/src-cfg"
+          python -m tds_macro --self-test 4000 --no-wizard --dry-run --settings-dir "$cfg"
+          cat "$cfg/tds_macro.log"
+          grep -q "macOS APIs: available" "$cfg/tds_macro.log"
+          grep -q "controller shut down cleanly" "$cfg/tds_macro.log"
+
+      - name: Build the app
+        run: python build/build.py
+
+      # Run the executable inside the built .app, not the source. "macOS APIs:
+      # available" in its log proves pyobjc was bundled: without it the app
+      # still starts, but clicks, hotkeys and recording silently do nothing.
+      - name: Launch the built app
+        run: |
+          cfg="$RUNNER_TEMP/app-cfg"
+          set +e
+          build/dist/TDSMacro.app/Contents/MacOS/TDSMacro --self-test 4000 --no-wizard --dry-run --settings-dir "$cfg"
+          code=$?
+          set -e
+          echo "TDSMacro exit code: $code"
+          if [ -f "$cfg/tds_macro.log" ]; then cat "$cfg/tds_macro.log"; fi
+          if [ -f "$cfg/crash.log" ]; then cat "$cfg/crash.log"; fi
+          test "$code" -eq 0
+          grep -q "macOS APIs: available" "$cfg/tds_macro.log"
+          grep -q "controller shut down cleanly" "$cfg/tds_macro.log"
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: TDSMacro-mac-${{ matrix.arch }}
+          path: build/dist/*.zip
+          if-no-files-found: error
+          retention-days: 30

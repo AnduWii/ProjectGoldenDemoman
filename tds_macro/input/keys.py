@@ -6,6 +6,7 @@ tests can validate keybinds on any platform.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 # --- Modifier flags accepted by RegisterHotKey ---------------------------------
@@ -21,10 +22,14 @@ MODIFIER_NAMES: dict[str, int] = {
     "ctrl": MOD_CONTROL,
     "control": MOD_CONTROL,
     "alt": MOD_ALT,
+    "option": MOD_ALT,  # macOS spelling of Alt
+    "opt": MOD_ALT,
     "shift": MOD_SHIFT,
     "win": MOD_WIN,
     "super": MOD_WIN,
     "meta": MOD_WIN,
+    "cmd": MOD_WIN,  # the Command key occupies the Windows-key slot
+    "command": MOD_WIN,
 }
 
 # --- Virtual-key codes --------------------------------------------------------
@@ -123,28 +128,35 @@ def is_extended(vk: int) -> bool:
 
 @dataclass(frozen=True)
 class HotkeySpec:
-    """A parsed global hotkey: modifier bitmask plus a virtual-key code."""
+    """A parsed global hotkey.
+
+    ``key`` is the platform-neutral key name; ``vk`` is its Windows virtual-key
+    code. macOS looks ``key`` up in its own keycode table instead.
+    """
 
     modifiers: int
     vk: int
     text: str
+    key: str = ""
 
     @property
     def register_modifiers(self) -> int:
         """Modifiers as passed to ``RegisterHotKey``, with auto-repeat off."""
         return self.modifiers | MOD_NOREPEAT
 
-    def describe(self) -> str:
+    def describe(self, platform: str | None = None) -> str:
+        """Human-readable form, in the target platform's own key names."""
+        mac = (platform or sys.platform) == "darwin"
         parts: list[str] = []
         if self.modifiers & MOD_CONTROL:
             parts.append("Ctrl")
         if self.modifiers & MOD_ALT:
-            parts.append("Alt")
+            parts.append("Option" if mac else "Alt")
         if self.modifiers & MOD_SHIFT:
             parts.append("Shift")
         if self.modifiers & MOD_WIN:
-            parts.append("Win")
-        parts.append(vk_to_key(self.vk).upper())
+            parts.append("Cmd" if mac else "Win")
+        parts.append((self.key or vk_to_key(self.vk)).upper())
         return "+".join(parts)
 
 
@@ -178,7 +190,7 @@ def parse_hotkey(spec: str) -> HotkeySpec:
         raise KeyParseError(
             f"{spec!r} is only modifiers -- add a normal key, e.g. Ctrl+Shift+F6"
         )
-    return HotkeySpec(modifiers, key_to_vk(key_token), raw)
+    return HotkeySpec(modifiers, key_to_vk(key_token), raw, normalize_key_name(key_token))
 
 
 def validate_keybind(name: str) -> str:

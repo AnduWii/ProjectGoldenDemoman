@@ -17,6 +17,7 @@ from __future__ import annotations
 import atexit
 import ctypes
 import logging
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -45,6 +46,45 @@ class HotkeyBinding:
         return f"{self.name}: FAILED ({self.error})"
 
 
+def validate_bindings(bindings: list[HotkeyBinding], platform: str | None = None) -> list[str]:
+    """Parse every binding and report the problems a user can act on.
+
+    Catches what the OS cannot tell apart from "works": an unparseable spec,
+    the same combination bound to two actions (the second registration just
+    fails, leaving one silently dead key), and -- on a Mac -- a PC-only key
+    such as Pause that has no key on a Mac keyboard. Shared by the Windows and
+    macOS managers so both behave the same.
+    """
+    mac = (platform or sys.platform) == "darwin"
+    problems: list[str] = []
+    seen: dict[tuple[int, int], str] = {}
+    for binding in bindings:
+        binding.error = ""
+        try:
+            spec = parse_hotkey(binding.spec_text)
+            if mac:
+                from .mac_keys import mac_keycode
+
+                mac_keycode(spec.key)
+        except KeyParseError as exc:
+            binding.spec = None
+            binding.error = str(exc)
+            problems.append(f"{binding.name}: {exc}")
+            continue
+        binding.spec = spec
+        key = (spec.modifiers, spec.vk)
+        if key in seen:
+            message = (
+                f"{binding.name} and {seen[key]} are both bound to "
+                f"{spec.describe(platform)}; only one will work"
+            )
+            binding.error = message
+            problems.append(message)
+        else:
+            seen[key] = binding.name
+    return problems
+
+
 @dataclass
 class HotkeyManager:
     """Owns the hotkey thread and the set of registered bindings.
@@ -69,34 +109,8 @@ class HotkeyManager:
         self.bindings.append(HotkeyBinding(name=name, spec_text=spec_text, callback=callback))
 
     def validate(self) -> list[str]:
-        """Parse all specs and report conflicts *before* touching Win32.
-
-        Catches two user-visible problems the OS cannot tell us apart: an
-        unparseable spec, and the same combination bound to two actions (where
-        the second ``RegisterHotKey`` fails and the user just sees one dead key).
-        """
-        problems: list[str] = []
-        seen: dict[tuple[int, int], str] = {}
-        for binding in self.bindings:
-            try:
-                spec = parse_hotkey(binding.spec_text)
-            except KeyParseError as exc:
-                binding.spec = None
-                binding.error = str(exc)
-                problems.append(f"{binding.name}: {exc}")
-                continue
-            binding.spec = spec
-            key = (spec.modifiers, spec.vk)
-            if key in seen:
-                message = (
-                    f"{binding.name} and {seen[key]} are both bound to "
-                    f"{spec.describe()}; only one will work"
-                )
-                binding.error = message
-                problems.append(message)
-            else:
-                seen[key] = binding.name
-        return problems
+        """Parse all specs and report conflicts *before* touching Win32."""
+        return validate_bindings(self.bindings)
 
     # -- lifecycle ------------------------------------------------------------
     def start(self, timeout: float = 3.0) -> list[str]:

@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Build the Windows bundle and zip it.
+"""Build the app for the platform this runs on, and zip it.
 
-    python build/build.py            # onedir folder + TDSMacro-<version>.zip
-    python build/build.py --onefile  # single TDSMacro.exe as well
+    python build/build.py            # Windows: TDSMacro folder + zip
+                                     # macOS:   TDSMacro.app + zip
+    python build/build.py --onefile  # Windows: a single TDSMacro.exe as well
 
-Produces everything under ``build/dist``.  Run on Windows: PyInstaller does not
-cross-compile, so a Linux run yields a Linux binary, which is useless here.
+Produces everything under ``build/dist``. PyInstaller does not cross-compile:
+build the Windows zip on Windows and the Mac zip on a Mac (CI does both).
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -72,6 +74,38 @@ def make_zip(version: str) -> Path:
     return archive
 
 
+def make_mac_zip(version: str) -> Path:
+    """Zip TDSMacro.app with ``ditto``.
+
+    Python's zipfile drops symlinks and executable bits, and a .app bundle
+    relies on both -- an app zipped that way unzips into something macOS
+    reports as damaged. ``ditto`` is what Finder's own "Compress" uses.
+    """
+    app = DIST / "TDSMacro.app"
+    if not app.is_dir():
+        raise SystemExit(f"expected {app} to exist; did the build run on macOS?")
+    stage = DIST / "TDSMacro"
+    if stage.exists():
+        shutil.rmtree(stage)
+    stage.mkdir()
+    subprocess.run(["ditto", str(app), str(stage / "TDSMacro.app")], check=True)
+    for extra in ("README.md", "LICENSE"):
+        source = ROOT / extra
+        if source.exists():
+            shutil.copy2(source, stage / extra)
+    examples = ROOT / "strategies"
+    if examples.is_dir():
+        shutil.copytree(examples, stage / "strategies")
+    archive = DIST / f"TDSMacro-{version}-mac-{platform.machine()}.zip"
+    if archive.exists():
+        archive.unlink()
+    subprocess.run(
+        ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(stage), str(archive)],
+        check=True,
+    )
+    return archive
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build TDS Macro for Windows.")
     parser.add_argument(
@@ -84,17 +118,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     version = read_version()
-    if sys.platform != "win32":
+    if sys.platform not in ("win32", "darwin"):
         print(
-            "WARNING: not running on Windows. PyInstaller does not cross-compile, so "
-            "this will produce a binary for the current platform, not a Windows exe.",
+            "WARNING: neither Windows nor macOS. PyInstaller does not cross-compile, so "
+            "this produces a binary for the current platform only.",
             file=sys.stderr,
         )
 
     shutil.rmtree(DIST, ignore_errors=True)
     run_pyinstaller(onefile=False)
-    archive = make_zip(version)
-    print(f"\nonedir bundle: {DIST / 'TDSMacro'}")
+    if sys.platform == "darwin":
+        archive = make_mac_zip(version)
+        print(f"\napp bundle:    {DIST / 'TDSMacro.app'}")
+    else:
+        archive = make_zip(version)
+        print(f"\nonedir bundle: {DIST / 'TDSMacro'}")
     print(f"zip:           {archive}  ({archive.stat().st_size / 1e6:.1f} MB)")
 
     if args.onefile:

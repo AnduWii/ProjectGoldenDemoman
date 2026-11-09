@@ -22,8 +22,7 @@ import queue
 import threading
 import time
 
-from .coords import NormPoint, screen_to_norm
-from .events import RawEvent, RawKind
+from .events import RawEvent, RawKind, build_raw_event
 from .keys import vk_to_key
 from .win32_defs import (
     HOOKPROC,
@@ -135,23 +134,8 @@ class RawInputTap:
                 t_ms, kind, vk, button, screen_pos = self._queue.get_nowait()
             except queue.Empty:
                 break
-            pos: NormPoint | None = None
-            in_client = False
-            if screen_pos is not None and client is not None:
-                in_client = client.contains(*screen_pos)
-                if in_client:
-                    pos = screen_to_norm(screen_pos[0], screen_pos[1], client)
-            events.append(
-                RawEvent(
-                    t_ms=t_ms,
-                    kind=kind,
-                    key=vk_to_key(vk) if vk is not None else None,
-                    button=button,
-                    screen_pos=screen_pos,
-                    pos=pos,
-                    in_client=in_client,
-                )
-            )
+            key = vk_to_key(vk) if vk is not None else None
+            events.append(build_raw_event(t_ms, kind, key, button, screen_pos, client))
         return events
 
     # -- thread body ----------------------------------------------------------

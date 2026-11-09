@@ -25,11 +25,11 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
 from ..config import Settings, SettingsStore
+from ..input import mac_quartz
+from ..input import platform as host
 from ..input.coords import NormPoint, Rect
-from ..input.hooks import RawInputTap
-from ..input.hotkeys import HotkeyManager
-from ..input.sendinput import InputBackend, MouseButton, NullBackend, Win32Backend
-from ..input.window import RobloxWindow, query_dpi_awareness, set_dpi_awareness
+from ..input.sendinput import InputBackend, MouseButton, NullBackend
+from ..input.window import WindowInfo, query_dpi_awareness, set_dpi_awareness
 from ..strategy.engine import GameState, RunnerDeps, RunStatus, StrategyRunner
 from ..strategy.loop import LoopController, LoopDeps, LoopPhase
 from ..strategy.recorder import Recorder, RecorderOptions
@@ -68,7 +68,8 @@ class AppController(QObject):
         self.strategy_path: Path | None = None
         self.dirty = False
 
-        self.window = RobloxWindow()
+        self.platform = host.current()
+        self.window = host.create_window()
         self.capture = ScreenCapture()
         self.calibration = Calibration()
         self.hud = HudReader(
@@ -78,8 +79,8 @@ class AppController(QObject):
             interval_ms=HUD_REFRESH_MS,
             detect_end_screen=False,
         )
-        self.hotkeys = HotkeyManager()
-        self.tap = RawInputTap(self.window)
+        self.hotkeys = host.create_hotkey_manager()
+        self.tap = host.create_input_tap(self.window)
         self.recorder: Recorder | None = None
         self.runner: StrategyRunner | None = None
         self.loop: LoopController | None = None
@@ -98,6 +99,8 @@ class AppController(QObject):
         if self.store.load_error:
             self.emit_log("error", self.store.load_error)
         self.emit_log("info", f"DPI mode: {self.dpi_mode} (process reports: {self.dpi_actual})")
+        if self.platform == host.MAC:
+            self._report_mac_status()
         if not self.store.portable:
             self.emit_log(
                 "warn",
@@ -217,6 +220,48 @@ class AppController(QObject):
             self.toggle_recording()
 
     # -- window ----------------------------------------------------------------
+    def list_windows(self) -> list[WindowInfo]:
+        """Every candidate window, for the wizard's manual picker."""
+        return host.list_windows()
+
+    # -- macOS permissions -----------------------------------------------------
+    def permissions(self) -> list[mac_quartz.Permission]:
+        """The macOS Privacy & Security switches; empty on Windows."""
+        if self.platform != host.MAC:
+            return []
+        return mac_quartz.permissions()
+
+    def request_permission(self, key: str) -> None:
+        if self.platform == host.MAC:
+            mac_quartz.request_permission(key)
+
+    def screen_capture_allowed(self) -> bool:
+        """False only on a Mac where Screen Recording is definitely off.
+
+        Capturing without it returns just the wallpaper, and every attempt can
+        raise the system prompt again, so the live HUD read is skipped instead.
+        """
+        if self.platform != host.MAC:
+            return True
+        return mac_quartz.screen_recording_granted() is not False
+
+    def _report_mac_status(self) -> None:
+        if not mac_quartz.apis_available():
+            self.emit_log(
+                "error",
+                "macOS APIs: MISSING (" + ", ".join(mac_quartz.missing_apis()) + "). "
+                "Input, hotkeys and recording will not work in this build.",
+            )
+            return
+        self.emit_log("info", "macOS APIs: available")
+        for permission in mac_quartz.permissions():
+            if permission.granted is not True:
+                self.emit_log(
+                    "warn",
+                    f"{permission.describe()} -- this {permission.why}. Open the setup "
+                    "wizard (Tools menu) to switch it on.",
+                )
+
     def refresh_window(self) -> bool:
         ok = self.window.refresh()
         self.windowChanged.emit(self.window.describe() if ok else self.window.last_error)
@@ -238,7 +283,7 @@ class AppController(QObject):
                 on_intent=lambda i: self.emit_log("step", f"would {i.describe()}")
             )
         else:
-            backend = Win32Backend(
+            backend = host.create_backend(
                 self.window,
                 use_scancodes=self.settings.use_scancodes,
                 require_foreground=self.settings.require_foreground,
@@ -516,6 +561,8 @@ class AppController(QObject):
                 self.statusChanged.emit(f"Failed: {runner.failure_reason}")
 
     def _refresh_hud(self) -> None:
+        if not self.screen_capture_allowed():
+            return
         snapshot: HudSnapshot = self.hud.read()
         self.hudChanged.emit(snapshot)
 

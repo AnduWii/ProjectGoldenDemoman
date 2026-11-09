@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..input.coords import NormPoint
+from ..input.keys import KeyParseError, parse_hotkey
 from ..strategy.steps import (
     Ability,
     Place,
@@ -99,13 +100,13 @@ class MainWindow(QMainWindow):
         self.window_label = QLabel("Roblox: not found")
         self.window_label.setObjectName("hint")
 
-        self.start_button = QPushButton("Start  (F7)")
+        self.start_button = QPushButton()
         self.start_button.setObjectName("primary")
         self.start_button.setToolTip("Replay the strategy. Roblox must be the focused window.")
-        self.stop_button = QPushButton("STOP  (F8)")
+        self.stop_button = QPushButton()
         self.stop_button.setObjectName("danger")
         self.stop_button.setToolTip("Stop immediately and release every held key.")
-        self.record_button = QPushButton("Record  (F6)")
+        self.record_button = QPushButton()
         self.record_button.setToolTip(
             "Play normally and your actions become steps. Press again to stop."
         )
@@ -340,11 +341,29 @@ class MainWindow(QMainWindow):
     def _set_window_label(self, text: str) -> None:
         self.window_label.setText(f"Roblox: {text}")
 
+    def _hotkey_label(self, action: str) -> str:
+        """The configured hotkey as shown on a button, e.g. 'Ctrl+Option+P'."""
+        spec_text = self.controller.settings.hotkeys.as_map()[action]
+        try:
+            return parse_hotkey(spec_text).describe()
+        except KeyParseError:
+            return spec_text
+
+    def _refresh_button_labels(self) -> None:
+        """Buttons show the *configured* hotkeys. They used to read F6/F7/F8
+        regardless, which was wrong after any change in Settings and wrong on
+        every Mac."""
+        recording = self.controller.recorder is not None
+        self.start_button.setText(f"Start  ({self._hotkey_label('play')})")
+        self.stop_button.setText(f"STOP  ({self._hotkey_label('stop')})")
+        self.record_button.setText(
+            "Stop recording" if recording else f"Record  ({self._hotkey_label('record')})"
+        )
+
     def _refresh_run_state(self) -> None:
         busy = self.controller.busy
-        recording = self.controller.recorder is not None
         self.start_button.setEnabled(not busy)
-        self.record_button.setText("Stop recording" if recording else "Record  (F6)")
+        self._refresh_button_labels()
         self.stop_button.setEnabled(True)  # always available
         if not busy:
             self.status_label.setText(self.status_label.text() or "Idle")
@@ -528,6 +547,7 @@ class MainWindow(QMainWindow):
     def _run_wizard(self) -> None:
         SetupWizard(self.controller, self).exec()
         self.controller.apply_hotkeys()
+        self._refresh_button_labels()
         self._refresh_summary()
 
     def _open_settings(self) -> None:
@@ -538,6 +558,7 @@ class MainWindow(QMainWindow):
         self.dry_run_box.setChecked(self.controller.settings.dry_run)
         self.loop_box.setChecked(self.controller.settings.loop.enabled)
         self.controller.apply_hotkeys()
+        self._refresh_button_labels()
 
     def _pick_menu_point(self) -> NormPoint | None:
         client, frame = self.controller.grab_game_frame()

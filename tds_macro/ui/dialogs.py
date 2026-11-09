@@ -180,8 +180,9 @@ class SettingsDialog(QDialog):
         self.hotkey_status.setWordWrap(True)
         form.addRow(self.hotkey_status)
         note = QLabel(
-            "Hotkeys are claimed from Windows when the app starts. If another "
-            "program already owns one, the log will say so and you can pick another."
+            "On Windows, hotkeys are claimed from the system when the app starts; if "
+            "another program already owns one, the log says so. On a Mac, F-keys are "
+            "media keys by default, so use a combination such as Ctrl+Option+P."
         )
         note.setObjectName("hint")
         note.setWordWrap(True)
@@ -446,11 +447,14 @@ class AboutDialog(QDialog):
             f"<h3>TDS Macro {version}</h3>"
             "<p>Records and replays Tower Defense Simulator strategies using "
             "<b>external input only</b>: mouse and keyboard are simulated through "
-            "the Windows <code>SendInput</code> API and the game is read from "
+            "the operating system's own input API (<code>SendInput</code> on "
+            "Windows, Quartz events on macOS) and the game is read from "
             "screenshots.</p>"
             "<p>It does <b>not</b> inject code into Roblox, attach a debugger, or "
             "read the game's memory. It needs no administrator rights, installs "
-            "nothing, and writes only to its own folder.</p>"
+            "nothing, and writes only to its own folder. On a Mac it needs the "
+            "Accessibility, Screen Recording and Input Monitoring permissions, "
+            "which only you can switch on.</p>"
             f"<p><b>DPI mode:</b> {dpi_mode}<br>"
             f"<b>Settings file:</b> {config_path}</p>"
             "<p style='color:#f0b429'><b>Automating Roblox breaks its terms of "

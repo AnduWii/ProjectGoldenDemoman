@@ -27,6 +27,32 @@ ROOT = Path(SPECPATH).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 ONEFILE = os.environ.get("TDS_ONEFILE", "") not in ("", "0", "false", "False")
+IS_MAC = sys.platform == "darwin"
+
+
+def read_version() -> str:
+    for line in (ROOT / "tds_macro" / "__init__.py").read_text(encoding="utf-8").splitlines():
+        if line.startswith("__version__"):
+            return line.split("=", 1)[1].strip().strip("\"'")
+    return "0.0.0"
+
+
+if IS_MAC:
+    # pyobjc frameworks are imported inside try/except so the package loads on
+    # every platform; naming them here guarantees they are bundled even if the
+    # analysis treats those imports as optional.
+    HIDDEN_IMPORTS = [
+        "mss.darwin",
+        "Quartz",
+        "AppKit",
+        "ApplicationServices",
+        "HIServices",
+        "Foundation",
+        "CoreFoundation",
+        "objc",
+    ]
+else:
+    HIDDEN_IMPORTS = ["mss.windows"]
 
 # Qt ships a great deal this app never touches.  Excluding it cuts the bundle
 # roughly in half and removes DLLs that scanners like least.
@@ -83,7 +109,7 @@ analysis = Analysis(
     # file would otherwise ship an app that looks broken instead of failing
     # loudly.
     datas=[],
-    hiddenimports=["mss.windows"],
+    hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     runtime_hooks=[],
     excludes=EXCLUDES,
@@ -126,4 +152,22 @@ else:
         upx=False,
         upx_exclude=[],
         name="TDSMacro",
+    )
+
+if IS_MAC and not ONEFILE:
+    # A real .app bundle. macOS ties the privacy permissions the user grants to
+    # this bundle's identifier and signature, so both are kept stable.
+    app = BUNDLE(
+        collected,
+        name="TDSMacro.app",
+        icon=None,
+        bundle_identifier="com.tdsmacro.app",
+        info_plist={
+            "CFBundleName": "TDS Macro",
+            "CFBundleDisplayName": "TDS Macro",
+            "CFBundleShortVersionString": read_version(),
+            "CFBundleVersion": read_version(),
+            "LSMinimumSystemVersion": "11.0",
+            "NSHighResolutionCapable": True,
+        },
     )

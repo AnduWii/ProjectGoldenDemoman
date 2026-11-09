@@ -8,8 +8,8 @@ several glyphs per capture.
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -24,9 +24,10 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
+from ..input import mac_quartz
+from ..input import platform as host
 from ..input.coords import NormPoint
 from ..input.sendinput import InputBackend, MouseButton
-from ..input.window import enumerate_windows
 from ..vision.calibration import (
     LOOP_TEMPLATES,
     TEMPLATE_END_SCREEN,
@@ -88,8 +89,15 @@ class IntroPage(_Page):
             "pressing keys, and by reading the screen. It never touches the Roblox "
             "program itself.</p>"
             "<p><b>Before you continue:</b> start Roblox, join a TDS match, and leave "
-            "it running in a window you can see. Do not use fullscreen-exclusive "
-            "mode.</p>"
+            "it running in a window you can see. "
+            + (
+                "Turn Roblox's full screen off from inside the game (Esc, then "
+                "Settings, then Fullscreen: Off) so it sits on the same desktop as "
+                "this window."
+                if controller.platform == host.MAC
+                else "Do not use fullscreen-exclusive mode."
+            )
+            + "</p>"
             "<p style='color:#f0b429'><b>Automating Roblox is against its terms of "
             "service and accounts have been banned for it. Use an account you are "
             "willing to lose.</b></p>"
@@ -98,6 +106,80 @@ class IntroPage(_Page):
         body.setTextFormat(Qt.TextFormat.RichText)
         layout = QVBoxLayout(self)
         layout.addWidget(body)
+
+
+class MacPermissionsPage(_Page):
+    """macOS only: the three Privacy & Security switches the app needs.
+
+    The app cannot switch these on itself -- macOS deliberately makes that the
+    user's decision. This page shows which are on, raises macOS's own prompt for
+    each, and opens the exact pane in System Settings.
+    """
+
+    def __init__(self, controller: AppController) -> None:
+        super().__init__(
+            controller,
+            "Allow TDS Macro on your Mac",
+            "macOS blocks clicking, screen reading and hotkeys until you allow them.",
+        )
+        intro = QLabel(
+            "<p>For each item below, press <b>Allow...</b>, then switch on "
+            f"<b>{mac_quartz.responsible_app_name()}</b> in the System Settings pane "
+            "that opens. You can switch these off again at any time.</p>"
+            "<p>After switching on Screen Recording or Input Monitoring, <b>quit and "
+            "reopen TDS Macro</b> -- macOS only applies those to a fresh launch.</p>"
+        )
+        intro.setWordWrap(True)
+        intro.setTextFormat(Qt.TextFormat.RichText)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(intro)
+        self.rows: dict[str, QLabel] = {}
+        for permission in controller.permissions():
+            allow = QPushButton(f"Allow {permission.title}...")
+            allow.setToolTip(f"This {permission.why}.")
+            allow.clicked.connect(
+                lambda _=False, key=permission.key, url=permission.settings_url: self._allow(
+                    key, url
+                )
+            )
+            state = QLabel()
+            state.setWordWrap(True)
+            self.rows[permission.key] = state
+            row = QHBoxLayout()
+            row.addWidget(allow)
+            row.addWidget(state, 1)
+            layout.addLayout(row)
+
+        check = QPushButton("Check again")
+        check.clicked.connect(self._refresh)
+        layout.addWidget(check)
+        layout.addStretch(1)
+
+    def initializePage(self) -> None:
+        self._refresh()
+
+    def _allow(self, key: str, url: str) -> None:
+        self.controller.request_permission(key)
+        QDesktopServices.openUrl(QUrl(url))
+        self._refresh()
+
+    def _refresh(self) -> None:
+        for permission in self.controller.permissions():
+            label = self.rows.get(permission.key)
+            if label is None:
+                continue
+            if permission.granted is True:
+                _status(label, f"{permission.title}: allowed", OK)
+            elif permission.granted is False:
+                _status(label, f"{permission.title}: not allowed -- {permission.why}", ERROR)
+            else:
+                _status(
+                    label,
+                    f"{permission.title}: not decided yet -- press Allow, or check again "
+                    "after reopening TDS Macro",
+                    WARN,
+                )
 
 
 class WindowPage(_Page):
@@ -156,8 +238,11 @@ class WindowPage(_Page):
 
     def _fill_list(self) -> None:
         self.list.clear()
-        for window in enumerate_windows():
-            if not window.title:
+        for window in self.controller.list_windows():
+            # macOS hides other apps' window titles until Screen Recording is
+            # allowed, so a window with no title but a known owning app (such
+            # as "Roblox") must still be offered.
+            if not (window.title or window.exe_name):
                 continue
             item = QListWidgetItem(window.describe())
             item.setData(Qt.ItemDataRole.UserRole, window.hwnd)
@@ -689,6 +774,8 @@ class SetupWizard(QWizard):
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
         self.addPage(IntroPage(controller))
+        if controller.platform == host.MAC:
+            self.addPage(MacPermissionsPage(controller))
         self.addPage(WindowPage(controller))
         self.addPage(HudPage(controller))
         self.addPage(TestClickPage(controller))

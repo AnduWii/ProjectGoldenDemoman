@@ -1,0 +1,109 @@
+"""Observing input on macOS while recording.
+
+The macOS counterpart of :class:`~tds_macro.input.hooks.RawInputTap`: a
+listen-only event tap that never blocks or alters the user's input, queues what
+it sees, and converts positions on the consumer's thread in :meth:`drain`.
+Needs the Input Monitoring permission.
+"""
+
+from __future__ import annotations
+
+import logging
+import queue
+from typing import Any
+
+from .events import RawEvent, RawKind, build_raw_event
+from .mac_keys import mac_key_name
+from .mac_quartz import QUARTZ, EventTapThread, is_autorepeat, is_our_event, monotonic_ms
+from .window import GeometryProvider
+
+log = logging.getLogger(__name__)
+
+QueuedEvent = tuple[int, RawKind, str | None, str | None, tuple[int, int] | None]
+
+
+def _event_kinds() -> dict[int, tuple[RawKind, str | None]]:  # pragma: no cover
+    q = QUARTZ
+    return {
+        int(q.kCGEventKeyDown): (RawKind.KEY_DOWN, None),
+        int(q.kCGEventKeyUp): (RawKind.KEY_UP, None),
+        int(q.kCGEventLeftMouseDown): (RawKind.MOUSE_DOWN, "left"),
+        int(q.kCGEventLeftMouseUp): (RawKind.MOUSE_UP, "left"),
+        int(q.kCGEventRightMouseDown): (RawKind.MOUSE_DOWN, "right"),
+        int(q.kCGEventRightMouseUp): (RawKind.MOUSE_UP, "right"),
+        int(q.kCGEventOtherMouseDown): (RawKind.MOUSE_DOWN, "middle"),
+        int(q.kCGEventOtherMouseUp): (RawKind.MOUSE_UP, "middle"),
+    }
+
+
+class MacRawInputTap:
+    """Queues the user's keys and clicks while Roblox is the active app."""
+
+    def __init__(self, geometry: GeometryProvider, only_when_foreground: bool = True) -> None:
+        self.geometry = geometry
+        self.only_when_foreground = only_when_foreground
+        self.error = ""
+        self._queue: queue.Queue[QueuedEvent] = queue.Queue(maxsize=4096)
+        self._tap: EventTapThread | None = None
+        self._kinds: dict[int, tuple[RawKind, str | None]] = {}
+
+    @property
+    def running(self) -> bool:
+        return self._tap is not None and self._tap.running
+
+    def start(self, timeout: float = 3.0) -> str:
+        if QUARTZ is None:
+            self.error = "recording needs the macOS frameworks (pyobjc)"
+            return self.error
+        if self.running:
+            return ""
+        self._kinds = _event_kinds()
+        self._tap = EventTapThread(
+            "tds-input-tap", list(self._kinds), self._on_event, want_filter=False
+        )
+        self.error = self._tap.start(timeout)
+        if self.error:
+            self._tap = None
+        return self.error
+
+    def stop(self) -> None:
+        tap, self._tap = self._tap, None
+        if tap is not None:
+            tap.stop()
+
+    def drain(self) -> list[RawEvent]:
+        client = self.geometry.client_rect()
+        events: list[RawEvent] = []
+        while True:
+            try:
+                t_ms, kind, key, button, screen_pos = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            events.append(build_raw_event(t_ms, kind, key, button, screen_pos, client))
+        return events
+
+    def _on_event(self, event_type: int, event: Any) -> bool:  # pragma: no cover - macOS
+        """Runs on the tap thread: classify and queue, nothing slow."""
+        entry = self._kinds.get(event_type)
+        if entry is None or is_our_event(event):
+            return False
+        kind, button = entry
+        if kind is RawKind.KEY_DOWN and is_autorepeat(event):
+            return False
+        if self.only_when_foreground and not self.geometry.is_foreground():
+            return False
+        key: str | None = None
+        screen_pos: tuple[int, int] | None = None
+        if button is None:
+            keycode = int(QUARTZ.CGEventGetIntegerValueField(event, QUARTZ.kCGKeyboardEventKeycode))
+            key = mac_key_name(keycode)
+            if key is None:
+                return False
+        else:
+            where = QUARTZ.CGEventGetLocation(event)
+            screen_pos = (int(round(where.x)), int(round(where.y)))
+        try:
+            self._queue.put_nowait((monotonic_ms(), kind, key, button, screen_pos))
+        except queue.Full:
+            log.warning("input tap queue full; dropping event")
+        return False

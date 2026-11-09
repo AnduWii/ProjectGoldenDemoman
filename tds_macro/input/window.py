@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -40,6 +41,8 @@ log = logging.getLogger(__name__)
 ROBLOX_EXE_NAMES: tuple[str, ...] = (
     "robloxplayerbeta.exe",
     "windows10universal.exe",  # Microsoft Store build
+    "roblox",  # macOS: the owning app's name as the window list reports it
+    "robloxplayer",  # macOS executable name
 )
 ROBLOX_CLASS_NAMES: tuple[str, ...] = ("windowsclient", "roblox")
 ROBLOX_TITLE_HINT = "roblox"
@@ -134,6 +137,12 @@ def choose_best_candidate(windows: list[WindowInfo], minimum_score: int = 40) ->
 
 
 # --- Win32-backed implementation ---------------------------------------------
+def _non_windows_dpi_note() -> str:
+    if sys.platform == "darwin":
+        return "macOS: Retina scaling is handled by the system (coordinates are in points)"
+    return "not Windows; DPI awareness not applicable"
+
+
 def query_dpi_awareness() -> str:
     """Describe the awareness the process actually has, as Windows sees it.
 
@@ -141,7 +150,7 @@ def query_dpi_awareness() -> str:
     legitimately fails the second time it is called.
     """
     if not IS_WINDOWS or user32 is None:
-        return "not Windows; DPI awareness not applicable"
+        return _non_windows_dpi_note()
     try:
         if hasattr(user32, "GetThreadDpiAwarenessContext") and hasattr(
             user32, "GetAwarenessFromDpiAwarenessContext"
@@ -174,7 +183,7 @@ def set_dpi_awareness() -> str:
     if _dpi_mode is not None:
         return _dpi_mode
     if not IS_WINDOWS:
-        _dpi_mode = "not Windows; DPI awareness not applicable"
+        _dpi_mode = _non_windows_dpi_note()
         return _dpi_mode
     try:
         assert user32 is not None
@@ -265,6 +274,30 @@ def enumerate_windows(visible_only: bool = True) -> list[WindowInfo]:  # pragma:
 
     user32.EnumWindows(callback, 0)
     return results
+
+
+class GameWindow(Protocol):
+    """A handle on the Roblox window, on either platform."""
+
+    @property
+    def hwnd(self) -> int | None: ...
+
+    @property
+    def last_error(self) -> str: ...
+
+    def pin(self, hwnd: int) -> None: ...
+
+    def unpin(self) -> None: ...
+
+    def refresh(self) -> bool: ...
+
+    def client_rect(self) -> Rect | None: ...
+
+    def virtual_screen(self) -> VirtualScreen: ...
+
+    def is_foreground(self) -> bool: ...
+
+    def describe(self) -> str: ...
 
 
 class GeometryProvider(Protocol):
