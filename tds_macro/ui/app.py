@@ -95,7 +95,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--verbose", action="store_true", help="debug logging")
     parser.add_argument(
-        "--no-wizard", action="store_true", help="skip the first-run setup wizard"
+        "--no-wizard",
+        action="store_true",
+        help="do not open any setup window on start (the macOS permissions prompt)",
     )
     parser.add_argument(
         "--self-test",
@@ -204,6 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_test:
         from PySide6.QtCore import QTimer
 
+        from ..vision.video import check_video_support
+
+        ok, detail = check_video_support(store.folder)
+        (log.info if ok else log.error)("video decoding: %s", detail)
         log.info("self-test: quitting in %d ms", args.self_test)
         QTimer.singleShot(args.self_test, app.quit)
 
@@ -211,12 +217,19 @@ def main(argv: list[str] | None = None) -> int:
         controller.load_strategy(args.strategy)
         window._reload_strategy()
 
-    if not controller.settings.setup_complete and not args.no_wizard and not args.self_test:
-        from .wizard import SetupWizard
+    # No setup wizard on first run any more: the simple screen works straight
+    # away, and the wizard is an optional extra (wave/cash reading, loop mode).
+    # The one exception is a Mac without Accessibility, where nothing can reach
+    # Roblox until the user switches it on -- so say so up front.
+    if not args.no_wizard and not args.self_test:
+        blocked = any(
+            p.key == "accessibility" and not p.granted for p in controller.permissions()
+        )
+        if blocked:
+            from .simple import PermissionsDialog
 
-        controller.emit_log("info", "First run: opening the setup wizard.")
-        SetupWizard(controller, window).exec()
-        controller.apply_hotkeys()
+            PermissionsDialog(controller, window).exec()
+            window.simple.refresh_permissions()
 
     code = app.exec()
     _teardown(app, window, controller)

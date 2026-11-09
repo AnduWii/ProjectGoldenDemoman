@@ -13,13 +13,15 @@ import queue
 from typing import Any
 
 from .events import RawEvent, RawKind, build_raw_event
-from .mac_keys import mac_key_name
+from .mac_keys import FLAG_COMMAND, FLAG_CONTROL, FLAG_OPTION, mac_key_name
 from .mac_quartz import QUARTZ, EventTapThread, is_autorepeat, is_our_event, monotonic_ms
 from .window import GeometryProvider
 
 log = logging.getLogger(__name__)
 
-QueuedEvent = tuple[int, RawKind, str | None, str | None, tuple[int, int] | None]
+SHORTCUT_FLAGS = FLAG_CONTROL | FLAG_OPTION | FLAG_COMMAND
+
+QueuedEvent = tuple[int, RawKind, str | None, str | None, tuple[int, int] | None, int]
 
 
 def _event_kinds() -> dict[int, tuple[RawKind, str | None]]:  # pragma: no cover
@@ -33,6 +35,12 @@ def _event_kinds() -> dict[int, tuple[RawKind, str | None]]:  # pragma: no cover
         int(q.kCGEventRightMouseUp): (RawKind.MOUSE_UP, "right"),
         int(q.kCGEventOtherMouseDown): (RawKind.MOUSE_DOWN, "middle"),
         int(q.kCGEventOtherMouseUp): (RawKind.MOUSE_UP, "middle"),
+        # Movement is only delivered as "dragged" while a button is held, so
+        # ordinary pointer movement never reaches the queue.
+        int(q.kCGEventLeftMouseDragged): (RawKind.MOUSE_MOVE, "left"),
+        int(q.kCGEventRightMouseDragged): (RawKind.MOUSE_MOVE, "right"),
+        int(q.kCGEventOtherMouseDragged): (RawKind.MOUSE_MOVE, "middle"),
+        int(q.kCGEventScrollWheel): (RawKind.SCROLL, None),
     }
 
 
@@ -76,10 +84,10 @@ class MacRawInputTap:
         events: list[RawEvent] = []
         while True:
             try:
-                t_ms, kind, key, button, screen_pos = self._queue.get_nowait()
+                t_ms, kind, key, button, screen_pos, delta = self._queue.get_nowait()
             except queue.Empty:
                 break
-            events.append(build_raw_event(t_ms, kind, key, button, screen_pos, client))
+            events.append(build_raw_event(t_ms, kind, key, button, screen_pos, client, delta))
         return events
 
     def _on_event(self, event_type: int, event: Any) -> bool:  # pragma: no cover - macOS
@@ -94,7 +102,15 @@ class MacRawInputTap:
             return False
         key: str | None = None
         screen_pos: tuple[int, int] | None = None
-        if button is None:
+        delta = 0
+        if kind in (RawKind.KEY_DOWN, RawKind.KEY_UP):
+            # On macOS, Ctrl/Option/Cmd never arrive as key presses (they are
+            # "flags changed" events), so the recorder cannot see them held.
+            # Drop shortcut presses here instead -- otherwise the Ctrl+Option+R
+            # that stops recording would itself be recorded as an R.
+            flags = int(QUARTZ.CGEventGetFlags(event))
+            if kind is RawKind.KEY_DOWN and flags & SHORTCUT_FLAGS:
+                return False
             keycode = int(QUARTZ.CGEventGetIntegerValueField(event, QUARTZ.kCGKeyboardEventKeycode))
             key = mac_key_name(keycode)
             if key is None:
@@ -102,8 +118,17 @@ class MacRawInputTap:
         else:
             where = QUARTZ.CGEventGetLocation(event)
             screen_pos = (int(round(where.x)), int(round(where.y)))
+            if kind is RawKind.SCROLL:
+                # Lines on the vertical axis; positive is up, as on Windows.
+                delta = int(
+                    QUARTZ.CGEventGetIntegerValueField(
+                        event, QUARTZ.kCGScrollWheelEventDeltaAxis1
+                    )
+                )
+                if delta == 0:
+                    return False
         try:
-            self._queue.put_nowait((monotonic_ms(), kind, key, button, screen_pos))
+            self._queue.put_nowait((monotonic_ms(), kind, key, button, screen_pos, delta))
         except queue.Full:
             log.warning("input tap queue full; dropping event")
         return False

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -31,7 +32,10 @@ from ..input.coords import NormPoint
 from ..input.keys import KeyParseError, parse_hotkey
 from ..strategy.steps import (
     Ability,
+    Click,
+    KeyPress,
     Place,
+    Scroll,
     Sell,
     SkipWave,
     Step,
@@ -47,6 +51,7 @@ from .dialogs import AboutDialog, SettingsDialog
 from .editor import StepEditor
 from .models import StepListModel
 from .pickers import PickerDialog, numpy_to_qimage
+from .simple import SimplePanel
 from .theme import ACCENT, ERROR, OK, STYLESHEET, TEXT, TEXT_DIM, WARN
 from .wizard import SetupWizard
 
@@ -62,6 +67,9 @@ NEW_STEPS: list[tuple[str, type[Step]]] = [
     ("Wait a fixed time", Wait),
     ("Wait for a wave", WaitForWave),
     ("Wait for cash", WaitForCash),
+    ("Click somewhere", Click),
+    ("Press a key", KeyPress),
+    ("Scroll the wheel", Scroll),
 ]
 
 
@@ -213,13 +221,28 @@ class MainWindow(QMainWindow):
         outer.addWidget(log_box)
         outer.setSizes([540, 230])
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
+        advanced = QWidget()
+        layout = QVBoxLayout(advanced)
+        back = QPushButton("< Simple view")
+        back.setToolTip("Back to the Record / Play / Stop screen.")
+        back.clicked.connect(lambda: self._set_mode("simple"))
+        header = QHBoxLayout()
+        header.addWidget(back)
+        header.addStretch(1)
+        layout.addLayout(header)
         layout.addLayout(top)
         layout.addWidget(self.status_label)
         layout.addWidget(self.window_label)
         layout.addWidget(outer, 1)
-        self.setCentralWidget(central)
+
+        # The TinyTask-style screen is the default; the editor above is one
+        # click away and shares everything with it.
+        self.simple = SimplePanel(self.controller)
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.simple)
+        self.pages.addWidget(advanced)
+        self.setCentralWidget(self.pages)
+        self._set_mode(self.controller.settings.ui_mode, save=False)
         self._refresh_summary()
 
     def _build_menu(self) -> None:
@@ -286,6 +309,19 @@ class MainWindow(QMainWindow):
         self.dry_run_box.toggled.connect(self._set_dry_run)
         self.loop_box.toggled.connect(self._set_loop)
 
+        simple = self.simple
+        simple.record_button.clicked.connect(self._record_clicked)
+        simple.play_button.clicked.connect(self._start)
+        simple.stop_button.clicked.connect(controller.emergency_stop)
+        simple.advancedRequested.connect(lambda: self._set_mode("advanced"))
+        simple.importVideoRequested.connect(self._import_video)
+        simple.hudSetupRequested.connect(self._run_wizard)
+        simple.loopSetupRequested.connect(self._run_wizard)
+        simple.permissionsRequested.connect(self._open_permissions)
+        simple.loop_box.toggled.connect(self._simple_options_changed)
+        simple.loop_runs.valueChanged.connect(self._simple_options_changed)
+        simple.dry_run_box.toggled.connect(self._simple_options_changed)
+
         self.list_view.selectionModel().selectionChanged.connect(self._on_selection)
         self.model.dataChanged.connect(lambda *_: self._refresh_summary())
         self.model.modelReset.connect(self._refresh_summary)
@@ -305,9 +341,9 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, level: str, message: str) -> None:
         colour = LEVEL_COLOURS.get(level, TEXT)
-        self.log_view.appendHtml(
-            f'<span style="color:{colour}">{html.escape(message)}</span>'
-        )
+        line = f'<span style="color:{colour}">{html.escape(message)}</span>'
+        self.log_view.appendHtml(line)
+        self.simple.append_log(line)
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -321,11 +357,15 @@ class MainWindow(QMainWindow):
         else:
             colour = TEXT
         self.status_label.setStyleSheet(f"color: {colour};")
+        self.simple.set_status(text, colour)
 
     def _set_hud(self, snapshot: object) -> None:
         if not isinstance(snapshot, HudSnapshot):
             return
         self.hud_label.setText(snapshot.describe())
+        self.simple.set_hud(
+            snapshot.describe(), snapshot.wave is not None and snapshot.cash is not None
+        )
         if snapshot.wave is None or snapshot.cash is None:
             self.hud_label.setStyleSheet(f"color: {TEXT_DIM};")
             self.hud_label.setToolTip(
@@ -359,10 +399,12 @@ class MainWindow(QMainWindow):
         self.record_button.setText(
             "Stop recording" if recording else f"Record  ({self._hotkey_label('record')})"
         )
+        self.simple.set_labels(self._hotkey_label, recording)
 
     def _refresh_run_state(self) -> None:
         busy = self.controller.busy
         self.start_button.setEnabled(not busy)
+        self.simple.set_busy(busy, self.controller.recorder is not None)
         self._refresh_button_labels()
         self.stop_button.setEnabled(True)  # always available
         if not busy:
@@ -381,8 +423,45 @@ class MainWindow(QMainWindow):
         self.summary_label.setText("   |   ".join(parts))
         self.summary_label.setStyleSheet(f"color: {ERROR if problems else TEXT_DIM};")
 
+    # -- modes and simple-screen actions ------------------------------------------
+    def _set_mode(self, mode: str, save: bool = True) -> None:
+        simple = mode != "advanced"
+        self.pages.setCurrentIndex(0 if simple else 1)
+        self.controller.settings.ui_mode = "simple" if simple else "advanced"
+        if simple:
+            self.simple.sync_options()
+            self.simple.refresh()
+        else:
+            self.dry_run_box.setChecked(self.controller.settings.dry_run)
+            self.loop_box.setChecked(self.controller.settings.loop.enabled)
+        if save:
+            self.controller.save_settings()
+
+    def _simple_options_changed(self) -> None:
+        self.simple.apply_options()
+
+    def _record_clicked(self) -> None:
+        self.controller.toggle_recording()
+        self.simple.refresh_recordings()
+
+    def _open_permissions(self) -> None:
+        from .simple import PermissionsDialog
+
+        PermissionsDialog(self.controller, self).exec()
+        self.simple.refresh_permissions()
+
+    def _import_video(self) -> None:
+        from .video_import import VideoImportDialog
+
+        # No "discard changes?" prompt: the import backs unsaved work up first.
+        dialog = VideoImportDialog(self.controller, self)
+        if dialog.exec() == VideoImportDialog.DialogCode.Accepted:
+            self.simple.refresh_recordings()
+
     # -- actions ---------------------------------------------------------------
     def _start(self) -> None:
+        if self.pages.currentIndex() == 0:
+            self.simple.apply_options()
         self.controller.start_playback()
 
     def _set_dry_run(self, on: bool) -> None:
@@ -548,6 +627,7 @@ class MainWindow(QMainWindow):
         SetupWizard(self.controller, self).exec()
         self.controller.apply_hotkeys()
         self._refresh_button_labels()
+        self.simple.refresh()
         self._refresh_summary()
 
     def _open_settings(self) -> None:
@@ -597,6 +677,10 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Discard
 
     def _reload_strategy(self) -> None:
+        self.simple.refresh_recordings()
+        self._reload_editor()
+
+    def _reload_editor(self) -> None:
         self.model.set_strategy(self.controller.strategy)
         self.name_edit.setText(self.controller.strategy.name)
         self.editor.clear()

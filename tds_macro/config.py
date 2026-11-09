@@ -245,6 +245,8 @@ class Settings:
     # from a previous session can belong to Discord or a browser today.
     log_to_file: bool = True
     theme: str = "dark"
+    # "simple" (TinyTask-style home screen) or "advanced" (the step editor).
+    ui_mode: str = "simple"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -261,6 +263,7 @@ class Settings:
             "last_strategy_path": self.last_strategy_path,
             "log_to_file": self.log_to_file,
             "theme": self.theme,
+            "ui_mode": self.ui_mode,
         }
 
     @classmethod
@@ -291,6 +294,8 @@ class Settings:
             settings.last_strategy_path = data["last_strategy_path"]
         if isinstance(data.get("theme"), str):
             settings.theme = data["theme"]
+        if data.get("ui_mode") in ("simple", "advanced"):
+            settings.ui_mode = data["ui_mode"]
         _migrate(settings, data)
         return settings
 

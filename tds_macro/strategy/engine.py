@@ -26,11 +26,15 @@ from enum import Enum
 from typing import Protocol
 
 from ..config import ActionBinding, Keybinds, Timing
-from ..input.coords import NormPoint
+from ..input.coords import NormPoint, remap_world_point
 from ..input.sendinput import InputBackend, MouseButton
 from .steps import (
     Ability,
+    Click,
+    Drag,
+    KeyPress,
     Place,
+    Scroll,
     Sell,
     SkipWave,
     Step,
@@ -138,6 +142,12 @@ Command = Sleep | Do | AwaitState
 Program = Generator[Command, object, None]
 
 
+def _move_to(backend: InputBackend, point: NormPoint) -> Callable[[], bool]:
+    """A move bound to one point -- a plain lambda in a loop would late-bind
+    and send every drag sample to the last point."""
+    return lambda: backend.move(point)
+
+
 class RunStatus(Enum):
     IDLE = "idle"
     RUNNING = "running"
@@ -183,6 +193,12 @@ class RunnerDeps:
     rng: random.Random = field(default_factory=random.Random)
     require_foreground: bool = True
     abort_on_timeout: bool = True
+    # Without HUD calibration there is no cash to watch, so placements are sent
+    # without the confirm-and-retry check instead of warning on every one.
+    verify_placements: bool = True
+    # Width / height of the game view right now, for moving tower spots
+    # recorded on a screen of a different shape. None or 0 = leave them as-is.
+    target_aspect: Callable[[], float] | None = None
 
 
 class StrategyRunner:
@@ -508,23 +524,65 @@ class StrategyRunner:
             yield from self._do_wait_for_wave(step)
         elif isinstance(step, WaitForCash):
             yield from self._do_wait_for_cash(step)
+        elif isinstance(step, Click):
+            yield from self._click_at(step.position, MouseButton(step.button))
+        elif isinstance(step, KeyPress):
+            yield from self._tap_key(step.key, max(self.timing.key_hold_ms, step.hold_ms))
+        elif isinstance(step, Drag):
+            yield from self._do_drag(step)
+        elif isinstance(step, Scroll):
+            yield from self._do_scroll(step)
         else:  # pragma: no cover - every kind is handled above
             self.deps.log("error", f"Unsupported step: {step!r}")
 
     # -- primitives -----------------------------------------------------------
-    def _tap_key(self, key: str) -> Program:
+    def _tap_key(self, key: str, hold_ms: int | None = None) -> Program:
         backend = self.deps.backend
         yield Do(lambda: backend.key_down(key), f"press {key.upper()}")
-        yield Sleep(self.timing.key_hold_ms)
+        yield Sleep(self.timing.key_hold_ms if hold_ms is None else hold_ms)
         yield Do(lambda: backend.key_up(key), f"release {key.upper()}")
 
-    def _click_at(self, point: NormPoint) -> Program:
+    def _click_at(self, point: NormPoint, button: MouseButton = MouseButton.LEFT) -> Program:
         backend = self.deps.backend
         yield Do(lambda: backend.move(point), f"move to ({point.x:.3f}, {point.y:.3f})")
         yield Sleep(self.timing.move_settle_ms)
-        yield Do(lambda: backend.mouse_down(MouseButton.LEFT), "press the mouse button")
+        yield Do(lambda: backend.mouse_down(button), f"press the {button.value} mouse button")
         yield Sleep(self.timing.click_hold_ms)
-        yield Do(lambda: backend.mouse_up(MouseButton.LEFT), "release the mouse button")
+        yield Do(lambda: backend.mouse_up(button), f"release the {button.value} mouse button")
+
+    def _world(self, point: NormPoint) -> NormPoint:
+        """A spot on the map, adjusted for the shape of the current game view."""
+        provider = self.deps.target_aspect
+        target = provider() if provider is not None else 0.0
+        return remap_world_point(point, self.strategy.aspect_ratio, target or 0.0)
+
+    def _do_drag(self, step: Drag) -> Program:
+        """Replay a drag along its recorded path with its original timing."""
+        if not step.path:
+            return
+        backend = self.deps.backend
+        button = MouseButton(step.button)
+        start = step.path[0].position
+        yield Do(lambda: backend.move(start), "move to the start of the drag")
+        yield Sleep(self.timing.move_settle_ms)
+        yield Do(lambda: backend.mouse_down(button), f"press the {button.value} mouse button")
+        elapsed = 0
+        for sample in step.path[1:]:
+            if sample.t_ms > elapsed:
+                yield Sleep(sample.t_ms - elapsed)
+                elapsed = sample.t_ms
+            yield Do(_move_to(backend, sample.position), "move during the drag")
+        yield Sleep(self.timing.click_hold_ms)
+        yield Do(lambda: backend.mouse_up(button), f"release the {button.value} mouse button")
+
+    def _do_scroll(self, step: Scroll) -> Program:
+        backend = self.deps.backend
+        point = step.position
+        # Roblox zooms toward the pointer, so the wheel turns where it did.
+        yield Do(lambda: backend.move(point), f"move to ({point.x:.3f}, {point.y:.3f})")
+        yield Sleep(self.timing.move_settle_ms)
+        clicks = step.clicks
+        yield Do(lambda: backend.scroll(clicks), f"scroll {clicks:+d}")
 
     def _apply_binding(self, binding: ActionBinding, label: str) -> Program:
         """Trigger a configured action, by key or by clicking a menu button."""
@@ -552,6 +610,23 @@ class StrategyRunner:
             )
             return
 
+        position = self._world(step.position)
+        if position != step.position and not position.is_inside():
+            self.deps.log(
+                "warn",
+                f"{step.tower_id}'s spot falls outside this screen's view (it was recorded "
+                "on a wider screen); placing it at the nearest edge.",
+            )
+
+        if not self.deps.verify_placements:
+            # No HUD calibration, so nothing to verify against: place it the
+            # way TinyTask would, and track the spot for later tower actions.
+            yield from self._tap_key(key)
+            yield Sleep(self._jitter(self.timing.action_delay_ms))
+            yield from self._click_at(position)
+            self._tower_positions[step.tower_id] = position
+            return
+
         attempts = self.timing.place_retries + 1
         for attempt in range(1, attempts + 1):
             yield from self._tap_key(key)
@@ -560,7 +635,7 @@ class StrategyRunner:
             # immediately before the click -- so as little income as possible
             # can land between it and the purchase.
             before = self._cash()
-            yield from self._click_at(step.position)
+            yield from self._click_at(position)
             yield Sleep(self.timing.place_confirm_ms)
 
             if before is None or self._cash() is None:
@@ -569,7 +644,7 @@ class StrategyRunner:
                     f"Placed {step.tower_id} but could not verify it: cash is unreadable. "
                     "Re-run HUD calibration if this keeps happening.",
                 )
-                self._tower_positions[step.tower_id] = step.position
+                self._tower_positions[step.tower_id] = position
                 return
 
             watcher = CashDropWatcher(before)
@@ -579,7 +654,7 @@ class StrategyRunner:
                 timeout_ms=self.timing.place_verify_ms,
             )
             if confirmed:
-                self._tower_positions[step.tower_id] = step.position
+                self._tower_positions[step.tower_id] = position
                 self.deps.log(
                     "info",
                     f"Placed {step.tower_id} (cash ${watcher.peak:,} -> ${watcher.low:,})",
@@ -604,7 +679,7 @@ class StrategyRunner:
         )
         # Record the position anyway so later Upgrade/Sell steps still aim
         # somewhere sensible instead of silently doing nothing.
-        self._tower_positions.setdefault(step.tower_id, step.position)
+        self._tower_positions.setdefault(step.tower_id, position)
 
     def _do_tower_action(
         self, tower_id: str, binding: ActionBinding, label: str, times: int

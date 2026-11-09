@@ -43,6 +43,7 @@ from .win32_defs import (
     MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP,
     MOUSEEVENTF_VIRTUALDESK,
+    MOUSEEVENTF_WHEEL,
     MOUSEINPUT,
     TDS_MACRO_SIGNATURE,
     user32,
@@ -50,6 +51,8 @@ from .win32_defs import (
 from .window import GeometryProvider
 
 log = logging.getLogger(__name__)
+
+WHEEL_DELTA = 120  # one notch of a standard mouse wheel
 
 
 class MouseButton(Enum):
@@ -73,6 +76,7 @@ class InputIntent:
     key: str | None = None
     button: MouseButton | None = None
     pos: NormPoint | None = None
+    clicks: int = 0
 
     def describe(self) -> str:
         if self.kind == "move" and self.pos is not None:
@@ -81,6 +85,8 @@ class InputIntent:
             return f"{self.kind.replace('_', ' ')} {self.button.value}"
         if self.kind in {"key_down", "key_up"}:
             return f"{self.kind.replace('_', ' ')} {self.key}"
+        if self.kind == "scroll":
+            return f"scroll {self.clicks:+d}"
         return self.kind
 
 
@@ -99,6 +105,8 @@ class InputBackend(Protocol):
     def key_down(self, key: str) -> bool: ...
 
     def key_up(self, key: str) -> bool: ...
+
+    def scroll(self, clicks: int) -> bool: ...
 
     def release_all(self) -> None: ...
 
@@ -153,6 +161,9 @@ class NullBackend:
     def key_up(self, key: str) -> bool:
         self.held_keys.discard(key)
         return self._record(InputIntent("key_up", key=key))
+
+    def scroll(self, clicks: int) -> bool:
+        return self._record(InputIntent("scroll", clicks=clicks))
 
     def release_all(self) -> None:
         for key in sorted(self.held_keys):
@@ -319,6 +330,23 @@ class Win32Backend:
 
     def key_up(self, key: str) -> bool:
         return self._key_event(key, False)
+
+    def scroll(self, clicks: int) -> bool:
+        """Turn the wheel ``clicks`` notches; positive is up / away from you."""
+        if not self._ready():
+            return False
+        event = INPUT(type=INPUT_MOUSE)
+        event.mi = MOUSEINPUT(
+            dx=0,
+            dy=0,
+            # mouseData is a DWORD, but the wheel delta is signed: a negative
+            # count must be passed as its two's-complement bit pattern.
+            mouseData=(clicks * WHEEL_DELTA) & 0xFFFFFFFF,
+            dwFlags=MOUSEEVENTF_WHEEL,
+            time=0,
+            dwExtraInfo=self._extra,
+        )
+        return self._send(event)
 
     def release_all(self) -> None:
         """Release everything we are holding, ignoring the foreground gate.

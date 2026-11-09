@@ -10,6 +10,13 @@ Roblox, attach a debugger, read the game's memory, load a DLL, or use an
 executor. It needs no administrator rights, installs nothing, edits no registry
 keys, and writes only inside its own folder.
 
+It works like TinyTask: press **Record**, play a match, press **Record** again,
+then **Play**. Unlike TinyTask it understands what you did — a hotbar key and a
+click become "place tower 2 here", an upgrade key becomes "upgrade T1" — so a
+replay can wait for the right wave and enough cash instead of clicking blind on
+a timer. You can also **give it a video of a match**, yours or another
+player's, and it works out what was bought, when and where.
+
 **On a Mac** there is one unavoidable exception: macOS will not let *any* app
 click, type or read another app's window until you switch it on yourself in
 **System Settings → Privacy & Security** — see [On a Mac](#on-a-mac).
@@ -28,8 +35,8 @@ in this category can promise you won't be banned.
 Use it on an account you are willing to lose.
 
 **What has and has not been verified.** The coordinate maths, the strategy
-engine, the recorder, the HUD reader and the loop controller are covered by 264
-automated tests that run on every commit. On `windows-latest`, CI also checks
+engine, the recorder, the HUD reader, the loop controller and the video importer
+are covered by 337 automated tests that run on every commit. On `windows-latest`, CI also checks
 per-monitor DPI awareness, claims and releases a real global hotkey, captures
 the screen, and **launches the built `TDSMacro.exe`**. On macOS (Apple Silicon
 and Intel), CI checks that every macOS framework call the app makes exists,
@@ -37,7 +44,9 @@ builds real input events, and **launches the built `TDSMacro.app`**. What has
 **never been run against Roblox itself** is input actually reaching the game on
 either platform, and template matching against the real TDS HUD and lobby. On a
 Mac that includes the permission prompts, which no CI machine can answer.
-Run the setup wizard, use Dry run for your first replay, and see
+The video importer has only been run on synthetic match videos whose answers
+are known exactly; how well it reads real TDS footage is unproven until you try
+it. Tick **Practice** for your first replay, and see
 [Troubleshooting](#troubleshooting) when something is off.
 
 ---
@@ -51,7 +60,8 @@ Run the setup wizard, use Dry run for your first replay, and see
    stick. Keep the folder together; `TDSMacro.exe` needs the files beside it.
 2. Start Roblox, join a TDS match, and leave it in a window you can see.
    Fullscreen-exclusive mode is not supported; borderless or windowed is fine.
-3. Run `TDSMacro.exe`. The setup wizard opens on first run.
+3. Run `TDSMacro.exe`. It opens on the simple screen — see
+   [Using it like TinyTask](#using-it-like-tinytask).
 
 Windows may warn you about an unrecognised app. That is SmartScreen reacting to
 an unsigned executable, which this is. Everything it does is in this repository
@@ -76,9 +86,10 @@ Mac**. "Chip: Apple M…" means **arm64**; "Processor: Intel" means **x86_64**.
 3. In Roblox, turn full screen off from inside the game: **Esc → Settings →
    Fullscreen: Off**. On a MacBook, F11 is a volume key, not Roblox's
    full-screen toggle.
-4. Follow the wizard. Its **Allow TDS Macro on your Mac** page has a button for
-   each permission; each one opens the right pane in System Settings, where you
-   switch **TDS Macro** on:
+4. On first launch an **Allow TDS Macro on your Mac** window opens, with a
+   button for each permission; each one opens the right pane in System
+   Settings, where you switch **TDS Macro** on. (Reopen it later from the
+   yellow banner on the main screen.)
 
    | Permission | Why |
    | --- | --- |
@@ -123,7 +134,7 @@ python -m tds_macro --dry-run --verbose
 | `--dry-run` | Log every action without sending any input |
 | `--settings-dir DIR` | Keep `settings.json` somewhere other than the app folder |
 | `--verbose` | Debug logging |
-| `--no-wizard` | Skip the first-run wizard |
+| `--no-wizard` | Don't open the macOS permissions window on start |
 | `--self-test MS` | Build the UI, run for MS milliseconds, exit (used by CI) |
 
 ### Building the app
@@ -144,9 +155,41 @@ the platform you are building for.
 
 ---
 
+## Using it like TinyTask
+
+The main screen has three big buttons and a few options:
+
+| | |
+| --- | --- |
+| **Record** (F6) | Start recording. Play the match. Press it again to stop. The recording is saved straight away as `strategies/recording-<date>-<time>.json` — no save dialog. |
+| **Play** (F7) | Replay the recording chosen in the **Recording** list. |
+| **Stop** (F8) | Stops everything immediately and lets go of any held key or button. Works even when the app is in the background. |
+| **Repeat matches** | Replay match after match, *forever* or a set number of times. Needs the lobby screens captured once (**Set up...**). |
+| **Practice (send nothing)** | Replay without sending any input; the log shows what would have happened. Use it for every new recording. |
+| **Import a video...** | Learn a match from a video — see [Learning from a video](#learning-from-a-video). |
+| **Set up wave & cash reading** | Optional, and the thing that makes replays reliable — see below. |
+| **Advanced editor** | The full step editor. **< Simple view** comes back. The app remembers which one you used last. |
+
+**Without wave & cash reading** a replay works like TinyTask: the same inputs
+with the same gaps. That breaks as soon as a match runs differently — a slower
+wave, less cash — because the clicks keep coming on the old schedule.
+
+**With wave & cash reading** set up (once, about five minutes), the app watches
+the wave and cash numbers on screen. Recordings then say "wait for wave 3"
+instead of "wait 41 seconds", purchases wait until you can afford them, and a
+placement that did not take (cash did not drop) is retried. That is the main
+reason to use this app rather than TinyTask.
+
+Picking another recording from the list never loses edits: unsaved changes are
+saved aside as `strategies/unsaved-backup-<date>-<time>.json` first.
+
+---
+
 ## The setup wizard
 
-Six pages, once:
+Optional. Open it from **Set up wave & cash reading** on the main screen or
+**Tools → Setup / calibration wizard**. It is needed for waiting on waves and
+cash, for confirming placements, and for repeating matches. Six pages:
 
 1. **Welcome** — the warning above.
 2. **Find the Roblox window** — press *Find Roblox automatically*. If it picks
@@ -162,7 +205,7 @@ Six pages, once:
 5. **Loop mode screens** — optional, only for repeating matches automatically.
 6. **Ready** — your hotkeys, listed.
 
-You can reopen it any time from **Tools → Setup / calibration wizard**.
+You can rerun it any time.
 
 ---
 
@@ -226,12 +269,70 @@ Your inputs are turned into *steps*, not raw coordinates:
 - clicking a tower you already placed selects it, so the next upgrade, sell or
   ability input becomes a step that refers to that tower by name (`T1`, `T2`);
 - clicking empty ground deselects, exactly as in game;
-- idle gaps become **Wait** steps, rounded to a tenth of a second.
+- idle gaps become **Wait** steps, rounded to a tenth of a second — or, with
+  wave & cash reading on, **Wait for wave N** whenever a new wave has started.
+
+Everything else is kept too, as in TinyTask:
+
+- any other click becomes a **Click** (left, right or middle button);
+- any other key becomes **Press key**, held for as long as you held it — so
+  holding W for two seconds replays as two seconds of W, not thirty taps;
+- a right-button drag (turning the camera) becomes a **Drag** that follows the
+  same path at the same speed;
+- the scroll wheel (zoom) becomes **Scroll**, with notches in one burst merged.
+
+Not recorded: the app's own hotkeys, and keyboard shortcuts with Ctrl, Alt,
+Cmd or Option held — replaying "Cmd+Q" would be a bad surprise. Mouse movement
+with no button held is not recorded either; it does nothing in TDS.
 
 Tower matching is by position, so it is a *guess*. The log says how many steps
 were matched that way and warns about clicks it could not place at all. Check
 which tower each step targets in the editor before trusting a recording — two
 towers placed close together can resolve to the wrong one.
+
+---
+
+## Learning from a video
+
+**Import a video...** reads a recording of a match — your own screen recording,
+or another player's YouTube video once you have downloaded it — and turns it
+into a recording you can play.
+
+A video does not show keys or the mouse reliably, so the app does not try to
+copy the cursor. It watches the **cash number** instead: every time cash drops,
+something was bought. The size of the drop is the price; what appeared on the
+map at that moment is where; a drop next to an existing tower is an upgrade.
+Towers that cost the same are taken to be the same tower.
+
+1. **Choose video...** Most formats work (`.mp4`, `.mov`, `.mkv`, `.webm`, ...).
+2. If the video has black bars, a webcam or an overlay, **Mark the game
+   area...** around just the game.
+3. The app needs to read this video's wave and cash numbers. If your own wave &
+   cash reading already works on it (your own recording, same window size), it
+   says so. Otherwise press **Teach wave & cash from this video...**: mark each
+   number, type what it shows, press **Learn**, and repeat at a few other
+   moments until every digit is known.
+4. **Find the purchases.** A 20-minute video takes a few minutes.
+5. **Check the result.** For each tower price, choose which of *your* hotbar
+   slots holds that tower — another player's loadout is not yours. For each
+   purchase, fix the type (placed / upgraded / ignore) and click the picture to
+   move a tower if it landed in the wrong spot. Unclear ones are yellow.
+6. **Create recording.** It opens like any other recording. Use **Practice**
+   first.
+
+Ticked by default when wave & cash reading is set up: **Wait for the right wave
+and enough cash before each purchase**. That replays the build order at the
+pace of *your* match. Unticked, it uses the video's own timing, TinyTask-style.
+
+What it cannot learn from a video, so add these yourself in the editor if they
+matter: selling, abilities, targeting changes, skipping waves, and anything the
+player does that does not cost cash. If the player turns the camera while
+buying, that purchase's spot cannot be found and is marked unclear. A video at
+a different shape from your screen (YouTube is 16:9, a MacBook is 16:10) is
+handled: tower spots are moved to the same place on the map.
+
+The best videos for this: 720p or better, the HUD not covered, the camera left
+still, the same map and mode you will play.
 
 ---
 
@@ -283,7 +384,7 @@ your own.
 
 ## Playing back
 
-Press **F7**, or the big Start button. Before anything is sent, the app checks:
+Press **F7**, or **Play**. Before anything is sent, the app checks:
 
 - Roblox is running and measurable;
 - the strategy validates;
@@ -432,12 +533,13 @@ tds_macro/
              low-level hooks) and macOS (Quartz events, event taps, window
              list, permissions) behind one platform factory
   vision/    screen capture, HUD calibration, digit recognition, template
-             matching
+             matching, video analysis
   strategy/  step model and JSON format, playback engine, recorder, loop
              controller
-  ui/        PySide6: main window, step editor, pickers, settings, wizard
+  ui/        PySide6: simple screen, advanced editor, pickers, settings,
+             wizard, video import
 tools/       win_check.py and mac_check.py diagnostics
-tests/       264 tests, no Windows or Mac required
+tests/       337 tests, no Windows or Mac required
 ```
 
 A few decisions worth knowing if you intend to change it:

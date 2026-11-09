@@ -17,6 +17,9 @@ class RawKind(Enum):
     KEY_UP = "key_up"
     MOUSE_DOWN = "mouse_down"
     MOUSE_UP = "mouse_up"
+    # Pointer movement, captured only while a button is held (a drag).
+    MOUSE_MOVE = "mouse_move"
+    SCROLL = "scroll"
 
 
 @dataclass(frozen=True)
@@ -36,10 +39,14 @@ class RawEvent:
     screen_pos: tuple[int, int] | None = None
     pos: NormPoint | None = None
     in_client: bool = False
+    # Wheel notches for SCROLL; positive is up / away from the user.
+    delta: int = 0
 
     def describe(self) -> str:
         if self.kind in (RawKind.KEY_DOWN, RawKind.KEY_UP):
             return f"{self.kind.value} {self.key}"
+        if self.kind is RawKind.SCROLL:
+            return f"scroll {self.delta:+d}"
         where = f" at ({self.pos.x:.3f}, {self.pos.y:.3f})" if self.pos else ""
         return f"{self.kind.value} {self.button}{where}"
 
@@ -51,6 +58,7 @@ def build_raw_event(
     button: str | None,
     screen_pos: tuple[int, int] | None,
     client: Rect | None,
+    delta: int = 0,
 ) -> RawEvent:
     """Make a RawEvent, normalizing the position against the game's client area.
 
@@ -71,4 +79,5 @@ def build_raw_event(
         screen_pos=screen_pos,
         pos=pos,
         in_client=in_client,
+        delta=delta,
     )

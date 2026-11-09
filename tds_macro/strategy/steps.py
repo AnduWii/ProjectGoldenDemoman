@@ -18,8 +18,10 @@ from enum import Enum
 from typing import Any, ClassVar
 
 from ..input.coords import NormPoint
+from ..input.keys import KeyParseError, normalize_key_name
 
-SCHEMA_VERSION = 1
+# 2: raw click/key/drag/scroll steps and the recording's aspect ratio.
+SCHEMA_VERSION = 2
 MIN_SLOT = 1
 MAX_SLOT = 5
 
@@ -33,6 +35,10 @@ class StepKind(Enum):
     WAIT = "wait"
     WAIT_FOR_WAVE = "wait_for_wave"
     WAIT_FOR_CASH = "wait_for_cash"
+    CLICK = "click"
+    KEY = "key"
+    DRAG = "drag"
+    SCROLL = "scroll"
 
 
 class StrategyError(ValueError):
@@ -222,6 +228,111 @@ class WaitForCash(Step):
         return 0
 
 
+# --- raw input steps ------------------------------------------------------------
+# What the recorder emits for anything it cannot name as a tower action, so that
+# nothing the user did is dropped -- the TinyTask behaviour. They replay exactly
+# what was done, without the retry and tower tracking the named steps get.
+MOUSE_BUTTONS = ("left", "right", "middle")
+
+
+@dataclass
+class Click(Step):
+    """A mouse click at a position in the game window."""
+
+    kind: ClassVar[StepKind] = StepKind.CLICK
+    position: NormPoint = field(default_factory=lambda: NormPoint(0.5, 0.5))
+    button: str = "left"
+
+    def describe(self) -> str:
+        which = "" if self.button == "left" else f"{self.button} "
+        return f"Click {which}at ({self.position.x:.3f}, {self.position.y:.3f})"
+
+    def payload(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"position": self.position.to_dict()}
+        if self.button != "left":
+            data["button"] = self.button
+        return data
+
+    def estimated_ms(self) -> int:
+        return 150
+
+
+@dataclass
+class KeyPress(Step):
+    """Press and release a key, holding it for ``hold_ms``."""
+
+    kind: ClassVar[StepKind] = StepKind.KEY
+    key: str = "space"
+    hold_ms: int = 35
+
+    def describe(self) -> str:
+        held = f" (held {self.hold_ms / 1000:.1f}s)" if self.hold_ms >= 300 else ""
+        return f"Press {self.key.upper()}{held}"
+
+    def payload(self) -> dict[str, Any]:
+        return {"key": self.key, "hold_ms": self.hold_ms}
+
+    def estimated_ms(self) -> int:
+        return self.hold_ms
+
+
+@dataclass(frozen=True)
+class DragPoint:
+    """One sample of a drag: where the pointer was, ``t_ms`` after it started."""
+
+    t_ms: int
+    position: NormPoint
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"t": self.t_ms, **self.position.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DragPoint:
+        return cls(int(data["t"]), NormPoint(float(data["x"]), float(data["y"])))
+
+
+@dataclass
+class Drag(Step):
+    """Hold a mouse button and move along a recorded path -- e.g. turning the
+    camera with the right button. Replayed with the original timing."""
+
+    kind: ClassVar[StepKind] = StepKind.DRAG
+    button: str = "right"
+    path: list[DragPoint] = field(default_factory=list)
+
+    @property
+    def duration_ms(self) -> int:
+        return self.path[-1].t_ms if self.path else 0
+
+    def describe(self) -> str:
+        return f"Drag with {self.button} button ({self.duration_ms / 1000:.1f}s)"
+
+    def payload(self) -> dict[str, Any]:
+        return {"button": self.button, "path": [p.to_dict() for p in self.path]}
+
+    def estimated_ms(self) -> int:
+        return self.duration_ms + 100
+
+
+@dataclass
+class Scroll(Step):
+    """Turn the mouse wheel at a position. Positive scrolls up (zooms in)."""
+
+    kind: ClassVar[StepKind] = StepKind.SCROLL
+    position: NormPoint = field(default_factory=lambda: NormPoint(0.5, 0.5))
+    clicks: int = 1
+
+    def describe(self) -> str:
+        direction = "up" if self.clicks > 0 else "down"
+        return f"Scroll {direction} x{abs(self.clicks)}"
+
+    def payload(self) -> dict[str, Any]:
+        return {"position": self.position.to_dict(), "clicks": self.clicks}
+
+    def estimated_ms(self) -> int:
+        return 100
+
+
 STEP_CLASSES: dict[StepKind, type[Step]] = {
     StepKind.PLACE: Place,
     StepKind.UPGRADE: Upgrade,
@@ -231,6 +342,10 @@ STEP_CLASSES: dict[StepKind, type[Step]] = {
     StepKind.WAIT: Wait,
     StepKind.WAIT_FOR_WAVE: WaitForWave,
     StepKind.WAIT_FOR_CASH: WaitForCash,
+    StepKind.CLICK: Click,
+    StepKind.KEY: KeyPress,
+    StepKind.DRAG: Drag,
+    StepKind.SCROLL: Scroll,
 }
 
 
@@ -275,11 +390,39 @@ def step_from_dict(data: dict[str, Any]) -> Step:
                 wave=int(data["wave"]),
                 timeout_ms=int(data.get("timeout_ms", 0)),
             )
-        return WaitForCash(
+        if kind is StepKind.WAIT_FOR_CASH:
+            return WaitForCash(
+                enabled=enabled,
+                note=note,
+                amount=int(data["amount"]),
+                timeout_ms=int(data.get("timeout_ms", 0)),
+            )
+        if kind is StepKind.CLICK:
+            return Click(
+                enabled=enabled,
+                note=note,
+                position=NormPoint.from_dict(data["position"]),
+                button=str(data.get("button", "left")),
+            )
+        if kind is StepKind.KEY:
+            return KeyPress(
+                enabled=enabled,
+                note=note,
+                key=str(data["key"]),
+                hold_ms=int(data.get("hold_ms", 35)),
+            )
+        if kind is StepKind.DRAG:
+            return Drag(
+                enabled=enabled,
+                note=note,
+                button=str(data.get("button", "right")),
+                path=[DragPoint.from_dict(point) for point in data["path"]],
+            )
+        return Scroll(
             enabled=enabled,
             note=note,
-            amount=int(data["amount"]),
-            timeout_ms=int(data.get("timeout_ms", 0)),
+            position=NormPoint.from_dict(data["position"]),
+            clicks=int(data["clicks"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise StrategyError(f"malformed {kind.value} step: {exc}") from exc
@@ -298,6 +441,11 @@ class Strategy:
         default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds")
     )
     schema_version: int = SCHEMA_VERSION
+    # Width / height of the game view this was recorded at; 0 if unknown.
+    # Roblox keeps the vertical field of view fixed, so on a wider or narrower
+    # screen the map shows more or less at the sides, and tower positions are
+    # adjusted for that at replay (see coords.remap_world_point).
+    aspect_ratio: float = 0.0
 
     # -- tower references -----------------------------------------------------
     def next_tower_id(self) -> str:
@@ -361,6 +509,19 @@ class Strategy:
                 problems.append((index, "wave numbers start at 1"))
             elif isinstance(step, WaitForCash) and step.amount < 0:
                 problems.append((index, "negative cash target"))
+            elif isinstance(step, Click | Scroll) and not step.position.is_inside():
+                problems.append((index, "position is outside the game window"))
+            elif isinstance(step, Click | Drag) and step.button not in MOUSE_BUTTONS:
+                problems.append((index, f"unknown mouse button {step.button!r}"))
+            elif isinstance(step, KeyPress):
+                try:
+                    normalize_key_name(step.key)
+                except KeyParseError as exc:
+                    problems.append((index, str(exc)))
+            elif isinstance(step, Drag) and not step.path:
+                problems.append((index, "drag has no recorded movement"))
+            elif isinstance(step, Scroll) and step.clicks == 0:
+                problems.append((index, "scroll of zero clicks"))
         return problems
 
     def estimated_ms(self) -> int:
@@ -375,6 +536,7 @@ class Strategy:
             "map_name": self.map_name,
             "difficulty": self.difficulty,
             "created_utc": self.created_utc,
+            "aspect_ratio": round(self.aspect_ratio, 4),
             "steps": [s.to_dict() for s in self.steps],
         }
 
@@ -400,6 +562,7 @@ class Strategy:
             created_utc=str(data.get("created_utc", "")),
             steps=[step_from_dict(s) for s in raw_steps],
             schema_version=version,
+            aspect_ratio=float(data.get("aspect_ratio", 0.0) or 0.0),
         )
 
     @classmethod

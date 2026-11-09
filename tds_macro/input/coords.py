@@ -240,3 +240,25 @@ def client_rect_from_window(
         raise ValueError(f"client area has no size: {rect.as_tuple()}")
     del window_rect  # retained for signature stability / future validation
     return rect
+
+
+def remap_world_point(point: NormPoint, source_aspect: float, target_aspect: float) -> NormPoint:
+    """Move a point on the *map* between game views of different shapes.
+
+    Roblox keeps the camera's vertical field of view fixed, so a wider screen
+    shows more of the map at the sides and a narrower one less, while the
+    vertical extent stays the same. A spot at normalized x on a 16:9 recording
+    therefore sits at a different normalized x on a 16:10 MacBook screen:
+    measured from the centre in units of screen *height*, its offset is the
+    same on both.
+
+    Only for points on the 3D map (tower spots). Interface buttons are laid out
+    differently and are left alone. Returns the point unchanged when either
+    aspect ratio is unknown (0) or the two are effectively equal.
+    """
+    if source_aspect <= 0 or target_aspect <= 0:
+        return point
+    if abs(source_aspect - target_aspect) / target_aspect < 0.005:
+        return point
+    offset = (point.x - 0.5) * source_aspect  # in units of screen height
+    return NormPoint(0.5 + offset / target_aspect, point.y)

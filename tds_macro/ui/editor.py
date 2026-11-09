@@ -27,8 +27,13 @@ from PySide6.QtWidgets import (
 
 from ..input.coords import NormPoint
 from ..strategy.steps import (
+    MOUSE_BUTTONS,
     Ability,
+    Click,
+    Drag,
+    KeyPress,
     Place,
+    Scroll,
     Sell,
     SkipWave,
     Step,
@@ -256,23 +261,7 @@ class StepEditor(QWidget):
             name.textEdited.connect(set_tower_name)
             self.form.addRow("Tower name", name)
 
-            self.position_label = QLabel(
-                f"x {step.position.x:.4f}   y {step.position.y:.4f}"
-            )
-            self.position_label.setObjectName("hud")
-            pick = QPushButton("Pick on screenshot...")
-            pick.setToolTip(
-                "Takes a fresh capture of the Roblox window and lets you click the "
-                "exact spot. Stored as a fraction of the window, so it survives a "
-                "resolution change."
-            )
-            pick.clicked.connect(self.pickRequested.emit)
-            row = QHBoxLayout()
-            row.addWidget(self.position_label, 1)
-            row.addWidget(pick)
-            holder = QWidget()
-            holder.setLayout(row)
-            self.form.addRow("Position", holder)
+            self._position_row(step.position)
 
         elif isinstance(step, Upgrade):
             self.form.addRow("Tower", self._tower_combo(step))
@@ -342,10 +331,91 @@ class StepEditor(QWidget):
                 ),
             )
             self.form.addRow("Timeout", self._timeout_row(step))
+        elif isinstance(step, Click):
+            self._position_row(step.position)
+            self.form.addRow("Button", self._button_combo(step))
+        elif isinstance(step, KeyPress):
+            key = QLineEdit(step.key)
+            key.setMaximumWidth(120)
+            key.setToolTip("The key to press, e.g. q, 3, space, f5.")
+
+            def set_key(text: str, target: KeyPress = step) -> None:
+                target.key = text.strip().lower()
+                self._emit()
+
+            key.textEdited.connect(set_key)
+            self.form.addRow("Key", key)
+
+            held = QDoubleSpinBox()
+            held.setRange(0.0, 60.0)
+            held.setDecimals(2)
+            held.setSingleStep(0.1)
+            held.setSuffix(" s")
+            held.setValue(step.hold_ms / 1000)
+            held.setToolTip("How long the key is held down.")
+
+            def set_hold(value: float, target: KeyPress = step) -> None:
+                target.hold_ms = int(value * 1000)
+                self._emit()
+
+            held.valueChanged.connect(set_hold)
+            self.form.addRow("Held for", held)
+        elif isinstance(step, Drag):
+            info = QLabel(
+                f"{step.button.capitalize()} button, {len(step.path)} points over "
+                f"{step.duration_ms / 1000:.2f}s. Replayed exactly as recorded; "
+                "re-record to change the movement."
+            )
+            info.setWordWrap(True)
+            info.setObjectName("hint")
+            self.form.addRow(info)
+        elif isinstance(step, Scroll):
+            self._position_row(step.position)
+            clicks = QSpinBox()
+            clicks.setRange(-50, 50)
+            clicks.setValue(step.clicks)
+            clicks.setToolTip("Wheel notches. Positive scrolls up (zooms in), negative down.")
+
+            def set_clicks(value: int, target: Scroll = step) -> None:
+                target.clicks = int(value)
+                self._emit()
+
+            clicks.valueChanged.connect(set_clicks)
+            self.form.addRow("Notches", clicks)
+
+    def _button_combo(self, step: Click) -> QComboBox:
+        combo = QComboBox()
+        for button in MOUSE_BUTTONS:
+            combo.addItem(button.capitalize(), button)
+        combo.setCurrentIndex(max(0, combo.findData(step.button)))
+
+        def set_button(index: int, target: Click = step) -> None:
+            target.button = str(combo.itemData(index))
+            self._emit()
+
+        combo.currentIndexChanged.connect(set_button)
+        return combo
+
+    def _position_row(self, position: NormPoint) -> None:
+        self.position_label = QLabel(f"x {position.x:.4f}   y {position.y:.4f}")
+        self.position_label.setObjectName("hud")
+        pick = QPushButton("Pick on screenshot...")
+        pick.setToolTip(
+            "Takes a fresh capture of the Roblox window and lets you click the "
+            "exact spot. Stored as a fraction of the window, so it survives a "
+            "resolution change."
+        )
+        pick.clicked.connect(self.pickRequested.emit)
+        row = QHBoxLayout()
+        row.addWidget(self.position_label, 1)
+        row.addWidget(pick)
+        holder = QWidget()
+        holder.setLayout(row)
+        self.form.addRow("Position", holder)
 
     def update_position(self, point: NormPoint) -> None:
-        """Called after the user picks a new placement point."""
-        if isinstance(self.step, Place):
+        """Called after the user picks a new point for a step that has one."""
+        if isinstance(self.step, Place | Click | Scroll):
             self.step.position = point
             if hasattr(self, "position_label"):
                 self.position_label.setText(f"x {point.x:.4f}   y {point.y:.4f}")

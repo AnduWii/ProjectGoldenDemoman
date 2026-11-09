@@ -111,12 +111,34 @@ class QuartzBackend:
         except ValueError as exc:
             self._last_error = str(exc)
             return False
-        event = QUARTZ.CGEventCreateMouseEvent(
-            None, QUARTZ.kCGEventMouseMoved, (float(x), float(y)), QUARTZ.kCGMouseButtonLeft
-        )
+        q = QUARTZ
+        target = (float(x), float(y))
+        held = next(iter(self.held_buttons), None)
+        if held is None:
+            event = q.CGEventCreateMouseEvent(
+                None, q.kCGEventMouseMoved, target, q.kCGMouseButtonLeft
+            )
+        else:
+            # With a button held, macOS expects a *dragged* event, and Roblox
+            # turns the camera from the event's delta fields -- a plain move
+            # with no delta would leave the camera where it was.
+            kind, cg_button = {
+                MouseButton.LEFT: (q.kCGEventLeftMouseDragged, q.kCGMouseButtonLeft),
+                MouseButton.RIGHT: (q.kCGEventRightMouseDragged, q.kCGMouseButtonRight),
+                MouseButton.MIDDLE: (q.kCGEventOtherMouseDragged, q.kCGMouseButtonCenter),
+            }[held]
+            event = q.CGEventCreateMouseEvent(None, kind, target, cg_button)
+            if event is not None:
+                start = self._location()
+                q.CGEventSetIntegerValueField(
+                    event, q.kCGMouseEventDeltaX, int(round(target[0] - start[0]))
+                )
+                q.CGEventSetIntegerValueField(
+                    event, q.kCGMouseEventDeltaY, int(round(target[1] - start[1]))
+                )
         ok = self._post(event)
         if ok:
-            self._cursor = (float(x), float(y))
+            self._cursor = target
         return ok
 
     def _button_event(self, button: MouseButton, down: bool) -> Any:  # pragma: no cover
@@ -188,6 +210,15 @@ class QuartzBackend:
 
     def key_up(self, key: str) -> bool:
         return self._key_event(key, False)
+
+    def scroll(self, clicks: int) -> bool:  # pragma: no cover - macOS only
+        """Turn the wheel ``clicks`` lines; positive is up, as on Windows."""
+        if not self._ready():
+            return False
+        event = QUARTZ.CGEventCreateScrollWheelEvent(
+            None, QUARTZ.kCGScrollEventUnitLine, 1, int(clicks)
+        )
+        return self._post(event)
 
     def release_all(self) -> None:
         """Release everything held, ignoring the foreground gate (see Win32Backend)."""

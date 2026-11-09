@@ -13,6 +13,15 @@ def key(t: int, name: str) -> RawEvent:
     return RawEvent(t_ms=t, kind=RawKind.KEY_DOWN, key=name)
 
 
+def key_up(t: int, name: str) -> RawEvent:
+    return RawEvent(t_ms=t, kind=RawKind.KEY_UP, key=name)
+
+
+def tap(t: int, name: str, hold: int = 30) -> list[RawEvent]:
+    """A real key press: down, then up."""
+    return [key(t, name), key_up(t + hold, name)]
+
+
 def click(t: int, x: float, y: float, inside: bool = True) -> RawEvent:
     return RawEvent(
         t_ms=t,
@@ -78,7 +87,7 @@ def test_click_too_far_from_any_tower_does_not_select_one() -> None:
 
 def test_repeated_upgrades_coalesce_into_one_step() -> None:
     rec = record(
-        [key(0, "1"), click(50, 0.3, 0.3), key(100, "e"), key(200, "e"), key(300, "e")],
+        [key(0, "1"), click(50, 0.3, 0.3), *tap(100, "e"), *tap(200, "e"), *tap(300, "e")],
         insert_waits=False,
     )
     steps = rec.finish().steps
@@ -87,9 +96,25 @@ def test_repeated_upgrades_coalesce_into_one_step() -> None:
 
 
 def test_repeated_skips_coalesce() -> None:
-    rec = record([key(0, "g"), key(100, "g")], insert_waits=False)
+    rec = record([*tap(0, "g"), *tap(100, "g")], insert_waits=False)
     steps = rec.finish().steps
     assert len(steps) == 1 and isinstance(steps[0], SkipWave) and steps[0].times == 2
+
+
+def test_holding_a_key_down_is_one_press_not_auto_repeat_spam() -> None:
+    """The OS repeats a held key's key-down ~30 times a second."""
+    held_e = [key(100 + 33 * i, "e") for i in range(30)] + [key_up(1_100, "e")]
+    rec = record([key(0, "1"), click(50, 0.3, 0.3), *held_e], insert_waits=False)
+    steps = rec.finish().steps
+    assert [type(s) for s in steps] == [Place, Upgrade]
+    assert steps[1].times == 1
+    assert rec.stats.key_repeats == 29
+
+
+def test_a_missed_key_up_does_not_swallow_the_key_for_good() -> None:
+    rec = record([*tap(0, "g"), key(100, "g"), key(5_000, "g")], insert_waits=False)
+    steps = rec.finish().steps
+    assert len(steps) == 1 and isinstance(steps[0], SkipWave) and steps[0].times == 3
 
 
 def test_sell_removes_the_tower_from_later_matching() -> None:

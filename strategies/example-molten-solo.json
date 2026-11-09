@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "Example: early farm then DJ",
-  "description": "A worked example showing every step type. The positions are placeholders for a 16:9 window and almost certainly wrong for your map -- open it, select each Place step and use 'Pick on screenshot...' to set your own. Keybinds come from Settings, not from this file.",
+  "description": "A worked example showing every step type. The positions are placeholders for a 16:9 game view and almost certainly wrong for your map -- open it, select each Place step and use 'Pick on screenshot...' to set your own. Keybinds come from Settings, not from this file. The camera turn and zoom at the end are switched off: they only show what a recording of those looks like.",
   "map_name": "(set your own)",
   "difficulty": "(set your own)",
   "created_utc": "2026-11-08T00:00:00+00:00",
@@ -9,34 +9,131 @@
     {
       "kind": "place",
       "slot": 1,
-      "position": { "x": 0.34, "y": 0.62 },
+      "position": {
+        "x": 0.34,
+        "y": 0.62
+      },
       "tower_id": "T1",
       "tower_name": "Farm",
       "note": "first farm, before any defence"
     },
-    { "kind": "wait_for_cash", "amount": 500, "timeout_ms": 120000 },
-    { "kind": "upgrade", "tower_id": "T1", "times": 2 },
-    { "kind": "wait_for_wave", "wave": 3, "timeout_ms": 180000 },
+    {
+      "kind": "wait_for_cash",
+      "amount": 500,
+      "timeout_ms": 120000
+    },
+    {
+      "kind": "upgrade",
+      "tower_id": "T1",
+      "times": 2
+    },
+    {
+      "kind": "wait_for_wave",
+      "wave": 3,
+      "timeout_ms": 180000
+    },
     {
       "kind": "place",
       "slot": 2,
-      "position": { "x": 0.52, "y": 0.47 },
+      "position": {
+        "x": 0.52,
+        "y": 0.47
+      },
       "tower_id": "T2",
       "tower_name": "Scout"
     },
-    { "kind": "skip_wave", "times": 2, "note": "skip while the farm pays for itself" },
-    { "kind": "wait_for_cash", "amount": 1800, "timeout_ms": 240000 },
+    {
+      "kind": "skip_wave",
+      "times": 2,
+      "note": "skip while the farm pays for itself"
+    },
+    {
+      "kind": "wait_for_cash",
+      "amount": 1800,
+      "timeout_ms": 240000
+    },
     {
       "kind": "place",
       "slot": 3,
-      "position": { "x": 0.60, "y": 0.55 },
+      "position": {
+        "x": 0.6,
+        "y": 0.55
+      },
       "tower_id": "T3",
       "tower_name": "DJ Booth"
     },
-    { "kind": "upgrade", "tower_id": "T3", "times": 3 },
-    { "kind": "wait_for_wave", "wave": 10, "timeout_ms": 600000 },
-    { "kind": "ability", "tower_id": "T3", "note": "ability on the first big wave" },
-    { "kind": "wait", "ms": 1500 },
-    { "kind": "sell", "tower_id": "T1", "note": "farm has paid off; free the space", "enabled": false }
-  ]
+    {
+      "kind": "upgrade",
+      "tower_id": "T3",
+      "times": 3
+    },
+    {
+      "kind": "wait_for_wave",
+      "wave": 10,
+      "timeout_ms": 600000
+    },
+    {
+      "kind": "ability",
+      "tower_id": "T3",
+      "note": "ability on the first big wave"
+    },
+    {
+      "kind": "wait",
+      "ms": 1500
+    },
+    {
+      "kind": "sell",
+      "tower_id": "T1",
+      "note": "farm has paid off; free the space",
+      "enabled": false
+    },
+    {
+      "kind": "click",
+      "position": {
+        "x": 0.5,
+        "y": 0.08
+      },
+      "note": "a plain click, as a recording keeps it: here, the skip-vote button"
+    },
+    {
+      "kind": "key",
+      "key": "space",
+      "hold_ms": 35,
+      "note": "a plain key press"
+    },
+    {
+      "kind": "drag",
+      "button": "right",
+      "enabled": false,
+      "note": "turning the camera with the right mouse button",
+      "path": [
+        {
+          "t": 0,
+          "x": 0.5,
+          "y": 0.5
+        },
+        {
+          "t": 150,
+          "x": 0.56,
+          "y": 0.5
+        },
+        {
+          "t": 300,
+          "x": 0.62,
+          "y": 0.5
+        }
+      ]
+    },
+    {
+      "kind": "scroll",
+      "position": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "clicks": 2,
+      "enabled": false,
+      "note": "zooming in two notches"
+    }
+  ],
+  "aspect_ratio": 1.7778
 }

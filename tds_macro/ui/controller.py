@@ -28,6 +28,7 @@ from ..config import Settings, SettingsStore
 from ..input import mac_quartz
 from ..input import platform as host
 from ..input.coords import NormPoint, Rect
+from ..input.keys import KeyParseError, parse_hotkey
 from ..input.sendinput import InputBackend, MouseButton, NullBackend
 from ..input.window import WindowInfo, query_dpi_awareness, set_dpi_awareness
 from ..strategy.engine import GameState, RunnerDeps, RunStatus, StrategyRunner
@@ -321,8 +322,19 @@ class AppController(QObject):
                 timing=self.settings.timing,
                 log=self.emit_log,
                 require_foreground=self.settings.require_foreground,
+                # Cash can only be watched once the HUD is calibrated; without
+                # that, placements go through as recorded, like TinyTask.
+                verify_placements=self.calibration.hud_ready,
+                target_aspect=self.client_aspect,
             ),
         )
+
+    def client_aspect(self) -> float:
+        """Width / height of the Roblox game view right now; 0 if unknown."""
+        rect = self.window.client_rect()
+        if rect is None or not rect.is_valid():
+            return 0.0
+        return rect.width / rect.height
 
     # -- playback ---------------------------------------------------------------
     @property
@@ -355,13 +367,17 @@ class AppController(QObject):
         return problems
 
     def _needs_hud(self) -> bool:
-        """Cash/wave gates and placement verification both depend on the HUD."""
-        from ..strategy.steps import Place, WaitForCash, WaitForWave
+        """Only wave and cash waits *need* the HUD.
+
+        Placements used to require it too, which meant a plain recording could
+        not be replayed until the user had completed calibration -- exactly the
+        setup burden simple mode exists to remove. Without it, placements are
+        simply not verified.
+        """
+        from ..strategy.steps import WaitForCash, WaitForWave
 
         return any(
-            isinstance(s, WaitForWave | WaitForCash | Place)
-            for s in self.strategy.steps
-            if s.enabled
+            isinstance(s, WaitForWave | WaitForCash) for s in self.strategy.steps if s.enabled
         )
 
     def start_playback(self, dry_run: bool | None = None) -> bool:
@@ -454,8 +470,14 @@ class AppController(QObject):
             return False
         self.recorder = Recorder(
             self.settings.keybinds,
-            RecorderOptions(),
+            # Keep every click, key, drag and scroll (TinyTask behaviour); time
+            # actions to the wave whenever the HUD can be read.
+            RecorderOptions(
+                keep_everything=True, insert_wave_gates=self.calibration.hud_ready
+            ),
             wave_provider=lambda: self.hud.read().wave,
+            excluded_keys=self._unmodified_hotkey_keys(),
+            aspect_ratio=self.client_aspect(),
         )
         error = self.tap.start()
         if error:
@@ -468,6 +490,19 @@ class AppController(QObject):
         self.statusChanged.emit("Recording -- play your strategy in Roblox")
         self.runStateChanged.emit()
         return True
+
+    def _unmodified_hotkey_keys(self) -> set[str]:
+        """Hotkeys pressed without a modifier (F6/F7/F8). The recorder already
+        skips anything pressed with Ctrl/Alt/Cmd held."""
+        keys: set[str] = set()
+        for spec_text in self.settings.hotkeys.as_map().values():
+            try:
+                spec = parse_hotkey(spec_text)
+            except KeyParseError:
+                continue
+            if not spec.modifiers:
+                keys.add(spec.key)
+        return keys
 
     def stop_recording(self, save: bool = True) -> Strategy | None:
         recorder = self.recorder
@@ -494,17 +529,40 @@ class AppController(QObject):
             # empty one. Nothing recorded means nothing changes.
             self.emit_log("info", "Nothing was recorded; the open strategy is unchanged.")
             return recorded
+        recorded.name = f"Recording {datetime.now():%Y-%m-%d %H:%M}"
+        self.adopt_strategy(recorded, "recording")
+        return recorded
+
+    def adopt_strategy(self, strategy: Strategy, prefix: str) -> Path | None:
+        """Make a freshly made strategy the open one and save it to its own file.
+
+        TinyTask-style: no save dialog, and never over the file the previous
+        strategy came from. Unsaved previous work is backed up first. Returns
+        the new file, or None if it could not be written (the strategy is then
+        open but marked unsaved).
+        """
         backup = self._backup_strategy_if_unsaved()
-        recorded.name = f"Recorded {datetime.now():%Y-%m-%d %H:%M}"
-        self.strategy = recorded
-        # A new, unsaved strategy: Save must not quietly write the recording
-        # over the file the previous strategy came from.
-        self.strategy_path = None
-        self.dirty = True
+        self.strategy = strategy
+        path = self.store.strategies_dir() / f"{prefix}-{datetime.now():%Y%m%d-%H%M%S}.json"
+        if self.save_strategy(path):
+            self.save_settings()
+            saved: Path | None = path
+        else:
+            self.strategy_path = None
+            self.dirty = True
+            saved = None
         if backup is not None:
             self.emit_log("info", f"Your previous unsaved strategy was kept at {backup}")
         self.strategyChanged.emit()
-        return recorded
+        return saved
+
+    def recent_strategies(self, limit: int = 15) -> list[Path]:
+        """Saved strategies and recordings, newest first."""
+        folder = self.store.strategies_dir()
+        if not folder.is_dir():
+            return []
+        files = [p for p in folder.glob("*.json") if not p.name.startswith("unsaved-backup-")]
+        return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
 
     def _backup_strategy_if_unsaved(self) -> Path | None:
         """Write the open strategy aside before something replaces it.
@@ -577,12 +635,19 @@ class AppController(QObject):
         return self.hud.last.to_game_state()
 
     # -- strategy files ----------------------------------------------------------
-    def load_strategy(self, path: Path) -> bool:
+    def load_strategy(self, path: Path, backup_unsaved: bool = False) -> bool:
+        """Open a strategy file. With ``backup_unsaved``, unsaved changes to
+        the open strategy are written aside first instead of being lost (the
+        simple screen has no "save changes?" prompt)."""
         try:
             strategy = Strategy.from_json(Path(path).read_text(encoding="utf-8"))
         except (OSError, StrategyError) as exc:
             self.emit_log("error", f"Could not load {Path(path).name}: {exc}")
             return False
+        if backup_unsaved:
+            backup = self._backup_strategy_if_unsaved()
+            if backup is not None:
+                self.emit_log("info", f"Your unsaved changes were kept at {backup}")
         self.strategy = strategy
         self.strategy_path = Path(path)
         self.dirty = False

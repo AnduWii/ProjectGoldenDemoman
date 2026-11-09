@@ -10,14 +10,17 @@ during calibration is both smaller and more accurate.
 The cost is a one-time labelling step in the setup wizard, and the need to
 re-calibrate if the HUD is restyled.  Both are stated in the README.
 
-Pure numpy: no OpenCV, no display, fully unit-testable.
+No display needed, so it is fully unit-testable; OpenCV is used only to enlarge
+small readouts before reading them.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
+import cv2
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -52,6 +55,29 @@ class ReadResult:
     @property
     def ok(self) -> bool:
         return self.value is not None
+
+
+# Readouts shorter than this are enlarged before thresholding.
+MIN_READ_HEIGHT = 48
+MAX_UPSCALE = 4
+
+
+def prepare(image: np.ndarray) -> np.ndarray:
+    """Enlarge a small readout with smooth (cubic) interpolation.
+
+    Video compression and small HUD text both leave digits a few pixels tall
+    with blocky or soft edges, and thresholding that directly chops strokes
+    apart: on a compressed test video the "$" read at 0.48 similarity and cash
+    was readable on only a third of frames. Enlarging first lets the threshold
+    follow the true outline -- every frame read, with no wrong values -- without
+    lowering the confidence floor that keeps misreads out. Applied identically
+    when learning glyphs and when reading them.
+    """
+    height = image.shape[0]
+    if height == 0 or height >= MIN_READ_HEIGHT:
+        return image
+    factor = min(MAX_UPSCALE, math.ceil(MIN_READ_HEIGHT / height))
+    return cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
 
 
 def to_gray(image: np.ndarray) -> np.ndarray:
@@ -223,8 +249,17 @@ def fit_glyph(mask: np.ndarray, size: tuple[int, int] = GLYPH_SIZE) -> np.ndarra
 
 
 def normalize_template(glyph: np.ndarray) -> np.ndarray:
-    """Zero-mean, unit-norm float vector, so matching is plain cosine similarity."""
-    vector = fit_glyph(glyph).astype(np.float32).reshape(-1)
+    """Zero-mean, unit-norm float vector, so matching is plain cosine similarity.
+
+    The fitted glyph is softened slightly first. A thin glyph such as "1" is a
+    bar about three pixels wide once normalized, so a one-pixel difference
+    between how it was learned and how it is read -- normal across capture
+    paths -- dropped its match from 1.0 to 0.57. Softened, it matches, and the
+    smallest gap between the right digit and the runner-up actually widens
+    (0.097 to 0.129 on the test font).
+    """
+    softened = cv2.GaussianBlur(fit_glyph(glyph).astype(np.float32), (3, 3), 0.8)
+    vector = np.asarray(softened, dtype=np.float32).reshape(-1)
     vector -= vector.mean()
     norm = float(np.linalg.norm(vector))
     if norm < 1e-6:
@@ -301,7 +336,7 @@ def read_number(
     if image.size == 0:
         return ReadResult(None, "", 0.0, reason="empty capture region")
 
-    mask = binarize(to_gray(image), invert=invert)
+    mask = binarize(to_gray(prepare(image)), invert=invert)
     boxes = segment_glyphs(mask, min_width=min_glyph_width)
     if not boxes:
         return ReadResult(None, "", 0.0, reason="no text found in the region")
@@ -376,7 +411,7 @@ def learn_from_text(
     if image.size == 0:
         return LearnOutcome(0, 0, error="the captured region is empty")
 
-    mask = binarize(to_gray(image), invert=invert)
+    mask = binarize(to_gray(prepare(image)), invert=invert)
     boxes = segment_glyphs(mask, min_width=min_glyph_width)
     if not boxes:
         return LearnOutcome(
@@ -419,5 +454,5 @@ def glyph_previews(
     """Segmented glyph masks, for showing the user what was detected."""
     if image.size == 0:
         return []
-    mask = binarize(to_gray(image), invert=invert)
+    mask = binarize(to_gray(prepare(image)), invert=invert)
     return [crop_glyph(mask, box) for box in segment_glyphs(mask, min_width=min_glyph_width)]

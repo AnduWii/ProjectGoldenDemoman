@@ -111,6 +111,10 @@ jobs:
           if (-not (Select-String -Path $log -Pattern "controller shut down cleanly" -Quiet)) {
             throw "the exe did not shut down cleanly"
           }
+          # Video import needs OpenCV's decoder inside the bundle, not just cv2.
+          if (-not (Select-String -Path $log -Pattern "video decoding: available" -Quiet)) {
+            throw "the exe cannot decode video"
+          }
 
       - name: Upload the build
         uses: actions/upload-artifact@v4
@@ -163,6 +167,7 @@ jobs:
           cat "$cfg/tds_macro.log"
           grep -q "macOS APIs: available" "$cfg/tds_macro.log"
           grep -q "controller shut down cleanly" "$cfg/tds_macro.log"
+          grep -q "video decoding: available" "$cfg/tds_macro.log"
 
       - name: Build the app
         run: python build/build.py
@@ -183,6 +188,7 @@ jobs:
           test "$code" -eq 0
           grep -q "macOS APIs: available" "$cfg/tds_macro.log"
           grep -q "controller shut down cleanly" "$cfg/tds_macro.log"
+          grep -q "video decoding: available" "$cfg/tds_macro.log"
 
       - name: Upload the build
         uses: actions/upload-artifact@v4

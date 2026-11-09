@@ -266,7 +266,11 @@ def test_a_recording_backs_up_unsaved_work_and_opens_as_a_new_strategy(
     controller.stop_recording()
 
     assert controller.strategy.steps[0].slot == 2
-    assert controller.strategy_path is None, "Save must not overwrite mine.json"
+    # Saved automatically to its own new file -- never over mine.json.
+    assert controller.strategy_path is not None
+    assert controller.strategy_path.name.startswith("recording-")
+    assert controller.strategy_path.exists()
+    assert controller.dirty is False
     backups = list(controller.store.strategies_dir().glob("unsaved-backup-*.json"))
     assert len(backups) == 1
     assert Strategy.from_json(backups[0].read_text()).name == "mine"
@@ -408,3 +412,89 @@ def test_the_wizard_skips_mac_permissions_elsewhere(controller: AppController) -
     wizard = SetupWizard(controller)
     assert not any(isinstance(wizard.page(i), MacPermissionsPage) for i in wizard.pageIds())
     wizard.deleteLater()
+
+
+# --- simple (TinyTask-style) screen -------------------------------------------------
+def test_the_app_opens_on_the_simple_screen(window: MainWindow) -> None:
+    assert window.pages.currentIndex() == 0
+    assert window.pages.currentWidget() is window.simple
+    assert "Record" in window.simple.record_button.text()
+    assert "Play" in window.simple.play_button.text()
+
+
+def test_switching_views_is_remembered(window: MainWindow, controller: AppController) -> None:
+    window._set_mode("advanced")
+    assert window.pages.currentIndex() == 1
+    assert controller.store.load().ui_mode == "advanced"
+    window._set_mode("simple")
+    assert window.pages.currentIndex() == 0
+    assert controller.store.load().ui_mode == "simple"
+
+
+def test_simple_options_reach_the_settings(window: MainWindow, controller: AppController) -> None:
+    simple = window.simple
+    simple.loop_box.setChecked(True)
+    simple.loop_runs.setValue(7)
+    simple.dry_run_box.setChecked(True)
+    simple.apply_options()
+    assert controller.settings.loop.enabled and controller.settings.loop.runs_target == 7
+    assert controller.settings.dry_run
+    # And the advanced view shows the same choice rather than its own copy.
+    window._set_mode("advanced", save=False)
+    assert window.dry_run_box.isChecked() and window.loop_box.isChecked()
+
+
+def test_saved_recordings_are_listed_and_picking_one_opens_it(
+    window: MainWindow, controller: AppController
+) -> None:
+    folder = controller.store.strategies_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("first", "second"):
+        strategy = Strategy(name=name, steps=[WaitForWave(wave=2)])
+        (folder / f"{name}.json").write_text(strategy.to_json(), encoding="utf-8")
+    window.simple.refresh_recordings()
+    names = [window.simple.recordings.itemText(i) for i in range(window.simple.recordings.count())]
+    assert {"first", "second"} <= set(names)
+    window.simple.recordings.setCurrentIndex(names.index("first"))
+    assert controller.strategy.name == "first"
+    assert controller.strategy_path == folder / "first.json"
+
+
+def test_picking_another_recording_keeps_unsaved_changes(
+    window: MainWindow, controller: AppController
+) -> None:
+    folder = controller.store.strategies_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "other.json").write_text(
+        Strategy(name="other", steps=[WaitForWave(wave=3)]).to_json(), encoding="utf-8"
+    )
+    controller.strategy = Strategy(name="edited", steps=[WaitForWave(wave=9)])
+    controller.dirty = True
+    window.simple.refresh_recordings()
+    combo = window.simple.recordings
+    combo.setCurrentIndex(combo.findText("other"))
+    assert controller.strategy.name == "other"
+    backups = list(folder.glob("unsaved-backup-*.json"))
+    assert len(backups) == 1 and "edited" in backups[0].read_text(encoding="utf-8")
+
+
+def test_an_empty_folder_says_how_to_start(window: MainWindow) -> None:
+    window.simple.refresh_recordings()
+    assert "press Record" in window.simple.recordings.itemText(0)
+
+
+def test_log_and_status_reach_the_simple_screen(
+    window: MainWindow, controller: AppController
+) -> None:
+    controller.emit_log("info", "hello from the test")
+    assert "hello from the test" in window.simple.log.toPlainText()
+    window._set_status("Playback failed: no Roblox window")
+    assert "no Roblox window" in window.simple.status.text()
+
+
+def test_the_video_import_window_opens_from_the_main_window(window: MainWindow) -> None:
+    from tds_macro.ui.video_import import VideoImportDialog
+
+    dialog = VideoImportDialog(window.controller, window)
+    assert dialog.pages.currentIndex() == 0
+    dialog.deleteLater()

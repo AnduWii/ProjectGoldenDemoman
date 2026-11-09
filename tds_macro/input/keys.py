@@ -86,6 +86,15 @@ for _name, _vk in VK_NAMES.items():
     if _vk not in VK_TO_NAME or len(_name) > len(VK_TO_NAME[_vk]):
         VK_TO_NAME.setdefault(_vk, _name)
 VK_TO_NAME.update({0x0D: "enter", 0x1B: "esc", 0x11: "ctrl"})
+# Low-level keyboard hooks report the left/right-specific codes rather than
+# the generic Shift/Ctrl/Alt ones. Naming them lets the recorder recognise a
+# held modifier -- and so not record the user's own keyboard shortcuts.
+VK_TO_NAME.update(
+    {0xA0: "shift", 0xA1: "shift", 0xA2: "ctrl", 0xA3: "ctrl", 0xA4: "alt", 0xA5: "alt"}
+)
+VK_TO_NAME.update({0x5B: "win", 0x5C: "win"})
+
+MODIFIER_KEYS: frozenset[str] = frozenset({"shift", "ctrl", "alt", "win", "cmd"})
 
 # Keys that require KEYEVENTF_EXTENDEDKEY; sending these without the flag makes
 # the arrow keys register as numpad presses on some layouts.

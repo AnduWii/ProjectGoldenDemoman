@@ -41,6 +41,8 @@ from .win32_defs import (
     WM_LBUTTONUP,
     WM_MBUTTONDOWN,
     WM_MBUTTONUP,
+    WM_MOUSEMOVE,
+    WM_MOUSEWHEEL,
     WM_RBUTTONDOWN,
     WM_RBUTTONUP,
     WM_SYSKEYDOWN,
@@ -74,7 +76,9 @@ class RawInputTap:
         self.geometry = geometry
         self.only_when_foreground = only_when_foreground
         self.error: str = ""
-        QueuedEvent = tuple[int, RawKind, int | None, str | None, tuple[int, int] | None]
+        QueuedEvent = tuple[
+            int, RawKind, int | None, str | None, tuple[int, int] | None, int
+        ]
         self._queue: queue.Queue[QueuedEvent] = queue.Queue(maxsize=4096)
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -85,6 +89,9 @@ class RawInputTap:
         # memory and the process dies.
         self._keyboard_proc: object = None
         self._mouse_proc: object = None
+        # Buttons the user is holding, so pointer movement is only forwarded
+        # during a drag rather than flooding the queue the whole time.
+        self._held: set[str] = set()
         self._atexit_registered = False
 
     @property
@@ -131,11 +138,11 @@ class RawInputTap:
         events: list[RawEvent] = []
         while True:
             try:
-                t_ms, kind, vk, button, screen_pos = self._queue.get_nowait()
+                t_ms, kind, vk, button, screen_pos, delta = self._queue.get_nowait()
             except queue.Empty:
                 break
             key = vk_to_key(vk) if vk is not None else None
-            events.append(build_raw_event(t_ms, kind, key, button, screen_pos, client))
+            events.append(build_raw_event(t_ms, kind, key, button, screen_pos, client, delta))
         return events
 
     # -- thread body ----------------------------------------------------------
@@ -181,10 +188,11 @@ class RawInputTap:
         vk: int | None,
         button: str | None,
         screen_pos: tuple[int, int] | None,
+        delta: int = 0,
     ) -> None:  # pragma: no cover - Windows only
         try:
             self._queue.put_nowait(
-                (int(time.monotonic() * 1000), kind, vk, button, screen_pos)
+                (int(time.monotonic() * 1000), kind, vk, button, screen_pos, delta)
             )
         except queue.Full:
             log.warning("input tap queue full; dropping event")
@@ -203,10 +211,25 @@ class RawInputTap:
     def _on_mouse(self, code: int, wparam: int, lparam: int) -> int:  # pragma: no cover
         assert user32 is not None
         if code == 0 and self._accepting():
-            entry = _MOUSE_MESSAGES.get(int(wparam))
-            if entry is not None:
-                data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                if data.dwExtraInfo != TDS_MACRO_SIGNATURE:
+            data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+            if data.dwExtraInfo != TDS_MACRO_SIGNATURE:
+                message = int(wparam)
+                where = (int(data.pt.x), int(data.pt.y))
+                entry = _MOUSE_MESSAGES.get(message)
+                if entry is not None:
                     kind, button = entry
-                    self._push(kind, None, button, (int(data.pt.x), int(data.pt.y)))
+                    if kind is RawKind.MOUSE_DOWN:
+                        self._held.add(button)
+                    else:
+                        self._held.discard(button)
+                    self._push(kind, None, button, where)
+                elif message == WM_MOUSEMOVE and self._held:
+                    self._push(RawKind.MOUSE_MOVE, None, next(iter(self._held)), where)
+                elif message == WM_MOUSEWHEEL:
+                    # The wheel delta is the signed high word of mouseData.
+                    raw = (int(data.mouseData) >> 16) & 0xFFFF
+                    signed = raw - 0x10000 if raw & 0x8000 else raw
+                    notches = signed // 120 if signed % 120 == 0 else (1 if signed > 0 else -1)
+                    if notches:
+                        self._push(RawKind.SCROLL, None, None, where, notches)
         return int(user32.CallNextHookEx(None, code, wparam, lparam))
