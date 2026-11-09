@@ -291,10 +291,14 @@ def test_permission_instructions_name_the_right_app(monkeypatch: pytest.MonkeyPa
 
 
 # --- settings location ---------------------------------------------------------------
-def test_settings_live_beside_the_app_bundle_not_inside_it() -> None:
-    """Writing inside the .app invalidates its signature and its permissions."""
-    exe = "/Users/me/Games/TDSMacro/TDSMacro.app/Contents/MacOS/TDSMacro"
-    assert app_dir(exe, frozen=True) == Path("/Users/me/Games/TDSMacro")
+def test_settings_live_beside_the_app_bundle_not_inside_it(tmp_path: Path) -> None:
+    """Writing inside the .app invalidates its signature and its permissions.
+
+    Built from a real folder rather than a literal like /Users/me/...: on
+    Windows, resolving a POSIX-style literal prepends a drive letter.
+    """
+    exe = tmp_path / "TDSMacro.app" / "Contents" / "MacOS" / "TDSMacro"
+    assert app_dir(str(exe), frozen=True) == tmp_path.resolve()
 
 
 def test_a_translocated_mac_app_falls_back_to_application_support() -> None:
