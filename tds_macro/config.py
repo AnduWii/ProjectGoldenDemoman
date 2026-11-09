@@ -23,7 +23,8 @@ from .input.coords import NormPoint
 
 log = logging.getLogger(__name__)
 
-SETTINGS_VERSION = 1
+# 2: default_timeout_ms 180 s -> 0 (wait forever); pinned_hwnd no longer saved.
+SETTINGS_VERSION = 2
 SETTINGS_FILENAME = "settings.json"
 APP_FOLDER_NAME = "TDSMacro"
 
@@ -147,7 +148,10 @@ class Timing:
     place_verify_ms: int = 1_500
     place_retries: int = 2
     poll_interval_ms: int = 100
-    default_timeout_ms: int = 180_000
+    # 0 = wait forever. A TDS wave gate is routinely ten-plus minutes away, so
+    # any fixed default here aborts real strategies mid-match; the live status
+    # line ("Waiting for wave 12 - detected wave 11") shows a stalled read.
+    default_timeout_ms: int = 0
 
     def clamped(self) -> Timing:
         """Keep values sane; a negative or absurd delay is a footgun, not a feature."""
@@ -159,7 +163,10 @@ class Timing:
             move_settle_ms=max(0, min(self.move_settle_ms, 5_000)),
             menu_open_ms=max(0, min(self.menu_open_ms, 10_000)),
             place_confirm_ms=max(0, min(self.place_confirm_ms, 30_000)),
-            place_verify_ms=max(0, min(self.place_verify_ms, 30_000)),
+            # Never 0: an AwaitState timeout of 0 means "no deadline", so a
+            # zero window would make a failed placement wait forever instead
+            # of retrying.
+            place_verify_ms=max(250, min(self.place_verify_ms, 30_000)),
             place_retries=max(0, min(self.place_retries, 10)),
             poll_interval_ms=max(10, min(self.poll_interval_ms, 5_000)),
             default_timeout_ms=max(0, self.default_timeout_ms),
@@ -185,7 +192,13 @@ class LoopSettings:
     enabled: bool = False
     runs_target: int = 0  # 0 means "forever, until stopped"
     use_play_again: bool = True
+    # How long to wait for each lobby screen (Play Again, map, Play).
     requeue_timeout_ms: int = 120_000
+    # How long a match may run *after the strategy's last step* before the loop
+    # gives up waiting for the end screen. Separate from the lobby timeout: the
+    # strategy usually finishes long before the map does, and reusing the 2 min
+    # lobby limit here failed the loop on nearly every real match. 0 = forever.
+    match_end_timeout_ms: int = 3_600_000
     between_match_delay_ms: int = 2_000
 
 
@@ -214,7 +227,8 @@ class Settings:
     use_scancodes: bool = True
     setup_complete: bool = False
     last_strategy_path: str = ""
-    pinned_hwnd: int = 0
+    # No pinned window handle is saved: Windows reuses HWND values, so a handle
+    # from a previous session can belong to Discord or a browser today.
     log_to_file: bool = True
     theme: str = "dark"
 
@@ -231,7 +245,6 @@ class Settings:
             "use_scancodes": self.use_scancodes,
             "setup_complete": self.setup_complete,
             "last_strategy_path": self.last_strategy_path,
-            "pinned_hwnd": self.pinned_hwnd,
             "log_to_file": self.log_to_file,
             "theme": self.theme,
         }
@@ -264,9 +277,24 @@ class Settings:
             settings.last_strategy_path = data["last_strategy_path"]
         if isinstance(data.get("theme"), str):
             settings.theme = data["theme"]
-        if isinstance(data.get("pinned_hwnd"), int):
-            settings.pinned_hwnd = data["pinned_hwnd"]
+        _migrate(settings, data)
         return settings
+
+
+# The default that shipped in settings version 1 and aborted long wave gates.
+_V1_DEFAULT_TIMEOUT_MS = 180_000
+
+
+def _migrate(settings: Settings, data: dict[str, Any]) -> None:
+    """Upgrade values saved by older builds.
+
+    Only values still equal to an old *default* are changed: a number the user
+    chose deliberately is theirs to keep.
+    """
+    version = data.get("version", 1)
+    is_v1 = not isinstance(version, int) or version < 2
+    if is_v1 and settings.timing.default_timeout_ms == _V1_DEFAULT_TIMEOUT_MS:
+        settings.timing.default_timeout_ms = 0
 
 
 def _load_dataclass(cls: type, data: Any) -> Any:

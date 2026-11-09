@@ -23,12 +23,13 @@ in this category can promise you won't be banned.
 Use it on an account you are willing to lose.
 
 **What has and has not been verified.** The coordinate maths, the strategy
-engine, the recorder, the HUD reader and the loop controller are covered by 206
-automated tests that run on every commit. The parts that only exist on Windows —
-`SendInput` actually reaching Roblox, `RegisterHotKey` against your particular
-keyboard layout, DPI behaviour across your particular monitors, and template
-matching against the real TDS HUD — are exercised by CI on `windows-latest` and
-by `tools/win_check.py`, but **they have never been run against Roblox itself.**
+engine, the recorder, the HUD reader and the loop controller are covered by 229
+automated tests that run on every commit. On `windows-latest`, CI also checks
+per-monitor DPI awareness, claims and releases a real global hotkey, captures
+the screen, and **launches the built `TDSMacro.exe`** and checks that it starts
+and shuts down cleanly. What has **never been run against Roblox itself** is
+`SendInput` actually reaching the game, and template matching against the real
+TDS HUD and lobby.
 Run the setup wizard, use Dry run for your first replay, and see
 [Troubleshooting](#troubleshooting) when something is off.
 
@@ -103,8 +104,10 @@ Six pages, once:
    class), choose it yourself from the list below.
 3. **Teach the app to read your HUD** — see the next section. This is the only
    fiddly part.
-4. **Test a click** — pick a harmless spot, press *Send the click*, and confirm
-   the cursor actually moves in game. If nothing happens, input is not reaching
+4. **Test a click** — pick a harmless spot and press *Send the click*. That
+   starts a 3-second countdown: **click on the Roblox window before it reaches
+   zero**, because input only goes to Roblox while it is the active window. The
+   cursor should jump to your spot. If nothing happens, input is not reaching
    Roblox and nothing else will work.
 5. **Loop mode screens** — optional, only for repeating matches automatically.
 6. **Ready** — your hotkeys, listed.
@@ -121,7 +124,10 @@ examples you give it once. There is no OCR engine involved — see
 
 **On the HUD page:**
 
-1. Press **Take a screenshot of Roblox**.
+1. Press **Take a screenshot of Roblox**. The app makes its own windows
+   invisible for a moment while it captures, so it does not photograph itself —
+   but anything *else* covering Roblox (a browser, an overlay) will be captured,
+   so keep the game unobstructed.
 2. Press **Mark the WAVE number** and drag a box around *just the digits*. Not
    the word "Wave", not the icon — only the number. The box is stored as a
    fraction of the window, so it keeps working if you resize or change
@@ -194,8 +200,14 @@ strategy that misbehaves.
 | **Ability** | Select a placed tower, then trigger its ability |
 | **Skip wave** | Press the skip key N times |
 | **Wait** | A fixed pause |
-| **Wait for wave** | Block until the HUD reports wave N or higher |
+| **Wait for wave** | Block until the HUD reports wave N or higher. If the counter reads `12/40`, the 12 is used |
 | **Wait for cash** | Block until the HUD reports at least $N |
+
+Each wait has a **timeout**. *use default* follows **Settings → Timing →
+Default wait timeout**, which is *wait forever* unless you change it — a wave
+gate in TDS is routinely ten minutes or more away. If the match ends while a
+wait is pending (your base is destroyed), the strategy stops cleanly instead of
+waiting it out, provided the end-of-match screen has been captured in the wizard.
 
 Prefer **Wait for wave** and **Wait for cash** over fixed **Wait** steps. They
 adapt when a round runs faster or slower; a fixed wait does not.
@@ -247,17 +259,30 @@ While running:
   `Waiting for wave 12 — detected wave 11`.
 
 **Failed placements.** A placement is confirmed by watching your cash drop — the
-only signal available from outside the game. If it doesn't drop, the app retries
-(twice by default, configurable). If cash can't be read at all it says the
-placement is unverifiable rather than pretending it worked.
+only signal available from outside the game. Because kill income keeps arriving,
+the app watches for any drop from the highest value it has seen since the click,
+not just a drop below the starting figure. If no drop shows within the
+*placement check window*, it retries (twice by default, configurable). If cash
+can't be read at all it says the placement is unverifiable rather than
+pretending it worked.
+
+One limit worth knowing: if a purchase and a larger burst of income both land
+between two HUD readings (they are about 150 ms apart), the purchase is
+invisible and a retry can place a second tower. It is rare, not impossible. Set
+**Placement retries** to 0 if that would be costly in your strategy.
 
 ### Loop mode
 
 Tick **Loop matches** to replay repeatedly. After the strategy finishes, the app
-waits for the end-of-match screen, clicks *Play Again* if it's offered, otherwise
-picks your map and presses Play, waits until the next match has actually started,
-and runs again — for a set number of runs or until you stop it. Runs completed
+waits for the end-of-match screen — for up to an hour by default, since the map
+usually runs long after your last step — then clicks *Play Again* if it's
+offered, otherwise picks your map and presses Play, waits until the next match
+has actually started, and runs again, for a set number of runs or until you stop
+it. A match that ends early (base lost) re-queues the same way. Runs completed
 are logged.
+
+If you alt-tab in the middle of a lobby click, the app releases the mouse
+button immediately and redoes that click once Roblox has focus again.
 
 Each click is confirmed by waiting for the *next* expected screen rather than
 assuming it landed, and every wait has a timeout with a specific message, so an
@@ -288,7 +313,9 @@ through. Raise these if the game drops inputs. Jitter adds a little randomness,
 because identical back-to-back timings make a dropped input reproducible rather
 than rare.
 
-**Loop mode** — number of runs, whether to try *Play Again*, and timeouts.
+**Loop mode** — number of runs, whether to try *Play Again*, how long to wait for
+each lobby screen, and the *longest match after the last step* (1 hour by
+default; 0 means forever).
 
 **Safety** — Dry run, *only send input while Roblox is focused* (leave this on;
 with it off the macro keeps clicking into whatever window you switch to), and
@@ -321,7 +348,9 @@ not need Roblox running.
 | Clicks land in the wrong place | Almost always DPI. Check **Help → About** says *per-monitor DPI aware v2*. If it says anything else, report it with your Windows version. Also re-check that the app found the right window — the client area, not a wrapper. |
 | Clicks land on the wrong monitor | Run `tools/win_check.py` and check the *absolute round trip* line says *lossless* and that the corner checks pass on your layout. |
 | Wave or cash reads wrong, or is blank | Re-run the calibration wizard. Check the missing-digits line: a digit the app has never seen cannot be read. Make the boxes tighter — they should contain only the number. |
-| "Timed out waiting for wave N" | The HUD isn't being read correctly; the macro waited and gave up rather than acting blind. Re-calibrate. The live readout at the top right tells you immediately whether reading works. |
+| "Timed out waiting for wave N" | Only happens if you set a timeout. Usually the HUD isn't being read correctly, and the macro gave up rather than acting blind. Re-calibrate. The live readout at the top right tells you immediately whether reading works. |
+| Calibration screenshot shows something other than the game | Something besides TDS Macro is covering Roblox — a browser, an overlay. The app hides its own windows while capturing, not other programs'. |
+| The test click says Roblox was not the active window | Press *Send the click*, then click on Roblox during the 3-second countdown. |
 | Placement keeps retrying and failing | Not enough cash, an invalid spot, or the hotbar slot holds a different tower than when you recorded. Watch a Dry run to see which. |
 | Upgrade/sell does nothing | Your TDS probably uses on-screen buttons, not keys. **Settings → Game keybinds** → *Click a menu button* and pick it. |
 | A hotkey doesn't work | Something else owns it. The log says which. Pick another in Settings. |
@@ -346,7 +375,7 @@ tds_macro/
              controller
   ui/        PySide6: main window, step editor, pickers, settings, wizard
 tools/       win_check.py diagnostics
-tests/       206 tests, no Windows required
+tests/       229 tests, no Windows required
 ```
 
 A few decisions worth knowing if you intend to change it:
@@ -419,7 +448,8 @@ QT_QPA_PLATFORM=offscreen pytest -q
 
 CI runs lint, types and tests on Linux, then on `windows-latest` runs the suite
 again (where the Win32 modules import for real), runs `tools/win_check.py`, boots
-the GUI with `--self-test`, builds the bundle and uploads it.
+the GUI from source with `--self-test`, builds the bundle, **launches the built
+exe** with `--self-test`, and only then uploads it.
 
 ---
 

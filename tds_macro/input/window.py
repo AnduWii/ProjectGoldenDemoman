@@ -221,6 +221,15 @@ def _process_exe_name(pid: int) -> str:  # pragma: no cover - Windows only
     return ""
 
 
+def window_pid(hwnd: int) -> int:  # pragma: no cover - Windows only
+    """Process id owning ``hwnd``, or 0 if it cannot be read."""
+    if not IS_WINDOWS or user32 is None:
+        return 0
+    pid = ctypes.c_uint32()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
 def enumerate_windows(visible_only: bool = True) -> list[WindowInfo]:  # pragma: no cover
     """List top-level windows, for the wizard's manual picker."""
     if not IS_WINDOWS or user32 is None:
@@ -280,9 +289,10 @@ class RobloxWindow:
     require restarting the app.
     """
 
-    def __init__(self, hwnd: int | None = None) -> None:
-        self._hwnd: int | None = hwnd
-        self._pinned = hwnd is not None
+    def __init__(self) -> None:
+        self._hwnd: int | None = None
+        self._pinned = False
+        self._pinned_pid = 0
         self._last_error: str = ""
 
     @property
@@ -294,20 +304,31 @@ class RobloxWindow:
         return self._last_error
 
     def pin(self, hwnd: int) -> None:
-        """Lock onto a window the user chose manually in the wizard."""
+        """Lock onto a window the user chose manually in the wizard.
+
+        The owning process id is recorded with it. Windows recycles HWND
+        values, so a handle alone can come to name a different window once the
+        original closes; the pid check in :meth:`refresh` catches that instead
+        of sending input to whatever window inherited the number.
+        """
         self._hwnd = hwnd
         self._pinned = True
+        self._pinned_pid = window_pid(hwnd)
 
     def unpin(self) -> None:
         self._pinned = False
+        self._pinned_pid = 0
 
     def refresh(self) -> bool:  # pragma: no cover - Windows only
         """Re-find the window.  Returns ``True`` when a usable handle is held."""
         if not IS_WINDOWS or user32 is None:
             self._last_error = "not running on Windows"
             return False
-        if self._pinned and self._hwnd and user32.IsWindow(self._hwnd):
-            return True
+        if self._pinned and self._hwnd:
+            if user32.IsWindow(self._hwnd) and window_pid(self._hwnd) == self._pinned_pid:
+                return True
+            log.info("pinned window %s is gone; searching for Roblox again", self._hwnd)
+            self.unpin()
         match = choose_best_candidate(enumerate_windows())
         if match is None:
             self._hwnd = None

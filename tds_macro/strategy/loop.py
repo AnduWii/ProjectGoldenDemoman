@@ -134,6 +134,10 @@ class LoopController:
         self._phase_deadline = 0
         self._wake_at = 0
         self._ops: list[tuple[int, Callable[[], bool], str]] = []
+        # The lobby step whose click is still being sent, so that losing focus
+        # half-way through can roll back and click it again.
+        self._click_step: int | None = None
+        self._focus_lost = False
 
     # -- clock ---------------------------------------------------------------
     def now(self) -> int:
@@ -196,13 +200,14 @@ class LoopController:
         if not self.phase.is_active:
             return
         if self.deps.require_foreground and not self.deps.focus.is_foreground():
-            # The runner handles its own pause; the lobby phases simply wait,
-            # so a user who alt-tabs between matches does not get stray clicks.
+            # The runner handles its own pause; the lobby phases wait, so a user
+            # who alt-tabs between matches does not get stray clicks.
             if self.phase is LoopPhase.PLAYING and self.runner is not None:
                 self.runner.tick()
             else:
-                self.detail = "Roblox lost focus -- waiting"
+                self._on_focus_lost()
             return
+        self._focus_lost = False
 
         now = self.now()
         if self._wake_at and now < self._wake_at:
@@ -222,10 +227,38 @@ class LoopController:
         elif self.phase is LoopPhase.WAITING_MATCH:
             self._tick_waiting_match(now)
 
+    def _on_focus_lost(self) -> None:
+        """Release input and abandon any half-sent lobby click.
+
+        Without this, a mouse_down already sent for "Play Again" stayed held
+        while the user was in another app, so their next mouse movement there
+        dragged or selected. The interrupted click is rolled back to its step
+        so it is found and clicked again once Roblox has focus.
+        """
+        self.detail = "Roblox lost focus -- waiting"
+        if self._focus_lost:
+            return
+        self._focus_lost = True
+        self.deps.backend.release_all()
+        if self._ops and self._click_step is not None:
+            self._ops.clear()
+            self.phase = LoopPhase.REQUEUEING
+            self._step_index = self._click_step
+            self._phase_deadline = 0
+            self._wake_at = 0
+            self.deps.log(
+                "warn",
+                "Roblox lost focus mid-click; that lobby click will be retried.",
+            )
+        self._ops.clear()
+        self._click_step = None
+
     def _run_next_op(self, now: int) -> None:
         delay, action, description = self._ops.pop(0)
         if not action():
             self.deps.log("error", f"Could not {description}: {self.deps.backend.last_error()}")
+        if not self._ops:
+            self._click_step = None  # the click finished
         if delay > 0:
             self._wake_at = now + delay
 
@@ -265,8 +298,13 @@ class LoopController:
         if runner.status is RunStatus.STOPPED:
             self.phase = LoopPhase.STOPPED
             return
-        self.deps.log("info", "Strategy finished; waiting for the match to end.")
-        self._enter(LoopPhase.WAITING_END, self.deps.settings.requeue_timeout_ms)
+        if runner.match_ended_early:
+            self.deps.log("info", "The match ended before the strategy did; re-queueing.")
+        else:
+            self.deps.log("info", "Strategy finished; waiting for the match to end.")
+        # Not the lobby timeout: a strategy usually finishes many waves before
+        # the map does, and the 2-minute lobby limit failed nearly every match.
+        self._enter(LoopPhase.WAITING_END, self.deps.settings.match_end_timeout_ms)
 
     def _enter(self, phase: LoopPhase, timeout_ms: int) -> None:
         self.phase = phase
@@ -291,7 +329,7 @@ class LoopController:
         if self._expired(now):
             self._fail(
                 "The end-of-match screen never appeared. Re-capture it in the calibration "
-                "wizard, or raise the re-queue timeout in Settings."
+                "wizard, or raise 'Longest match after the last step' in Settings."
             )
             return
         self.detail = "Waiting for the match to end"
@@ -310,6 +348,7 @@ class LoopController:
         if result.found and result.centre is not None:
             self.deps.log("info", f"Clicking {step.description}.")
             if step.click:
+                self._click_step = self._step_index
                 self._queue_click(result.centre)
             self._step_index += 1
             self._phase_deadline = 0

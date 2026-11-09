@@ -103,3 +103,34 @@ def test_saving_is_atomic_and_leaves_no_temp_file(tmp_path: Path) -> None:
     names = sorted(p.name for p in tmp_path.iterdir())
     assert names == ["settings.json"]
     json.loads((tmp_path / "settings.json").read_text())
+
+
+def test_old_default_wait_timeout_is_migrated_to_wait_forever() -> None:
+    """Version-1 files carry the 180 s default that aborted long wave gates."""
+    old = Settings.from_dict({"version": 1, "timing": {"default_timeout_ms": 180_000}})
+    assert old.timing.default_timeout_ms == 0
+    unversioned = Settings.from_dict({"timing": {"default_timeout_ms": 180_000}})
+    assert unversioned.timing.default_timeout_ms == 0
+
+
+def test_a_deliberately_chosen_wait_timeout_is_kept() -> None:
+    chosen = Settings.from_dict({"version": 1, "timing": {"default_timeout_ms": 600_000}})
+    assert chosen.timing.default_timeout_ms == 600_000
+    current = Settings.from_dict({"version": 2, "timing": {"default_timeout_ms": 180_000}})
+    assert current.timing.default_timeout_ms == 180_000
+
+
+def test_window_handles_are_not_saved_between_sessions(tmp_path: Path) -> None:
+    """HWNDs are reused by Windows; yesterday's Roblox handle can be Discord today."""
+    store = SettingsStore(tmp_path)
+    store.save(store.load())
+    saved = json.loads((tmp_path / "settings.json").read_text())
+    assert "pinned_hwnd" not in saved
+    loaded = Settings.from_dict({"pinned_hwnd": 12345})
+    assert not hasattr(loaded, "pinned_hwnd")
+
+
+def test_loop_has_a_separate_long_match_timeout() -> None:
+    loop = Settings().loop
+    assert loop.match_end_timeout_ms >= 30 * 60 * 1000
+    assert loop.match_end_timeout_ms > loop.requeue_timeout_ms

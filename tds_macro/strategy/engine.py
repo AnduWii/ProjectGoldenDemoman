@@ -69,6 +69,38 @@ class GameStateProvider(Protocol):
     def snapshot(self) -> GameState: ...
 
 
+class CashDropWatcher:
+    """Decides whether a purchase happened, from cash readings alone.
+
+    Comparing against the pre-click figure fails whenever kill or wave income
+    lands in the same window: $1000, buy for $300, earn $400, and cash never
+    reads below $1000 -- so the engine retried and bought a second tower.
+
+    Cash only ever *decreases* because of a purchase, so the watcher tracks the
+    highest reading seen since the baseline and confirms on any reading below
+    it. Income that arrives before the purchase shows up raises the peak, and
+    the purchase then registers as a drop from that peak.
+
+    Residual risk, stated rather than hidden: if the purchase and a larger burst
+    of income both land between two consecutive readings, no drop is ever
+    visible and a retry can still double-place. Readings every ~150 ms make
+    that rare, not impossible.
+    """
+
+    def __init__(self, baseline: int) -> None:
+        self.peak = baseline
+        self.low = baseline
+
+    def __call__(self, state: GameState) -> bool:
+        if state.cash is None:
+            return False
+        if state.cash < self.peak:
+            self.low = state.cash
+            return True
+        self.peak = state.cash
+        return False
+
+
 class FocusProvider(Protocol):
     def is_foreground(self) -> bool: ...
 
@@ -167,6 +199,7 @@ class StrategyRunner:
         self.steps_completed = 0
         self.placements_retried = 0
         self.placements_failed = 0
+        self.match_ended_early = False
 
         self._program: Program | None = None
         self._wake_at = 0
@@ -215,6 +248,7 @@ class StrategyRunner:
         self.steps_completed = 0
         self.placements_retried = 0
         self.placements_failed = 0
+        self.match_ended_early = False
         self.failure_reason = ""
         self._started_at = self.now()
         self.status = RunStatus.RUNNING
@@ -319,11 +353,37 @@ class StrategyRunner:
             return
         self._wake_at = 0
 
+        # A match can end before the strategy does -- the base dies, or the
+        # strategy simply outlasts the map. Without this the runner sat in a
+        # WaitForWave that could never be satisfied until it timed out, and in
+        # loop mode that timeout failed the whole loop instead of re-queueing.
+        if self.deps.state.snapshot().end_screen:
+            self._finish_match_ended()
+            return
+
         if self._await is not None:
             self._poll_await(now)
             return
 
         self._advance()
+
+    def _finish_match_ended(self) -> None:
+        step = self.current_step()
+        where = f" at step {self.current_index + 1} ({step.describe()})" if step else ""
+        if self._program is not None:
+            self._program.close()
+            self._program = None
+        self._await = None
+        self._await_deadline = 0
+        self.deps.backend.release_all()
+        self.status = RunStatus.COMPLETED
+        self.status_detail = ""
+        self.match_ended_early = True
+        self.deps.log(
+            "warn",
+            f"The match ended{where}; stopping the strategy. "
+            f"{self.steps_completed} of {self.total_steps} steps had run.",
+        )
 
     def _poll_await(self, now: int) -> None:
         pending = self._await
@@ -494,9 +554,12 @@ class StrategyRunner:
 
         attempts = self.timing.place_retries + 1
         for attempt in range(1, attempts + 1):
-            before = self._cash()
             yield from self._tap_key(key)
             yield Sleep(self._jitter(self.timing.action_delay_ms))
+            # Read the baseline as late as possible -- after selecting the slot,
+            # immediately before the click -- so as little income as possible
+            # can land between it and the purchase.
+            before = self._cash()
             yield from self._click_at(step.position)
             yield Sleep(self.timing.place_confirm_ms)
 
@@ -509,34 +572,25 @@ class StrategyRunner:
                 self._tower_positions[step.tower_id] = step.position
                 return
 
-            # Keep watching for the drop rather than sampling once. The HUD
-            # reader only publishes a value once a majority of recent frames
-            # agree on it, so the new figure can arrive a few frames late --
-            # and treating that lag as a failed placement would retry and place
-            # a second tower, which costs real cash and can block the spot.
-            # A named function rather than a closure over `before`, which is
-            # rebound on each retry: a late-evaluated closure would compare
-            # against the wrong attempt's figure.
-            def dropped_below(state: GameState, threshold: int = before) -> bool:
-                return state.cash is not None and state.cash < threshold
-
+            watcher = CashDropWatcher(before)
             confirmed = yield AwaitState(
-                predicate=dropped_below,
-                description=f"cash to drop below ${before:,}",
+                predicate=watcher,
+                description=f"the cash drop from placing {step.tower_id}",
                 timeout_ms=self.timing.place_verify_ms,
             )
             if confirmed:
                 self._tower_positions[step.tower_id] = step.position
-                after = self._cash()
-                spent = f"${before:,} -> ${after:,}" if after is not None else "cash dropped"
-                self.deps.log("info", f"Placed {step.tower_id} ({spent})")
+                self.deps.log(
+                    "info",
+                    f"Placed {step.tower_id} (cash ${watcher.peak:,} -> ${watcher.low:,})",
+                )
                 return
             if attempt < attempts:
                 self.placements_retried += 1
                 self.deps.log(
                     "warn",
                     f"Placement of {step.tower_id} did not go through "
-                    f"(cash still ${before:,} after "
+                    f"(cash never dropped from ${watcher.peak:,} within "
                     f"{(self.timing.place_confirm_ms + self.timing.place_verify_ms) / 1000:.1f}s); "
                     f"retry {attempt}/{attempts - 1}",
                 )
@@ -574,9 +628,20 @@ class StrategyRunner:
                 yield Sleep(self._jitter(self.timing.action_delay_ms))
             yield from self._apply_binding(self.deps.keybinds.skip_wave, "skip wave")
 
+    def _step_timeout(self, step_timeout_ms: int) -> int:
+        """Resolve a step's timeout: its own if set, else the app default.
+
+        0 at the step level means "use the default" (Settings > Timing), and
+        a default of 0 means wait forever -- which is now the shipped default.
+        The old fixed 180 s default aborted any WaitForWave more than three
+        minutes away while the editor labelled 0 as "wait forever", which in
+        TDS is nearly every wave gate past the opening.
+        """
+        return step_timeout_ms if step_timeout_ms > 0 else self.timing.default_timeout_ms
+
     def _do_wait_for_wave(self, step: WaitForWave) -> Program:
         target = step.wave
-        timeout = step.timeout_ms or self.timing.default_timeout_ms
+        timeout = self._step_timeout(step.timeout_ms)
         satisfied = yield AwaitState(
             predicate=lambda s: s.wave is not None and s.wave >= target,
             description=f"wave {target}",
@@ -587,7 +652,7 @@ class StrategyRunner:
 
     def _do_wait_for_cash(self, step: WaitForCash) -> Program:
         target = step.amount
-        timeout = step.timeout_ms or self.timing.default_timeout_ms
+        timeout = self._step_timeout(step.timeout_ms)
         satisfied = yield AwaitState(
             predicate=lambda s: s.cash is not None and s.cash >= target,
             description=f"${target:,}",

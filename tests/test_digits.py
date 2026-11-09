@@ -285,3 +285,17 @@ def test_glyph_previews_match_the_character_count() -> None:
     from tds_macro.vision.digits import glyph_previews
 
     assert len(glyph_previews(render("$1,250"))) == 6
+
+
+def test_a_current_over_total_readout_reads_the_current_value() -> None:
+    """'12/40' was read as 1240, which satisfied every WaitForWave at once."""
+    from tds_macro.vision.digits import parse_readout
+
+    slash = np.zeros((20, 12), dtype=bool)
+    for row in range(20):
+        slash[row, max(0, 11 - row * 12 // 20)] = True
+    classifier = trained_classifier()
+    classifier.add("/", slash)
+    assert parse_readout("12/40") == "12"
+    assert parse_readout("$1,250") == "1250"
+    assert parse_readout("/40") == ""

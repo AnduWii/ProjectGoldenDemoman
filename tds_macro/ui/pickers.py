@@ -66,8 +66,12 @@ def numpy_to_qimage(frame: np.ndarray) -> QImage:
         return QImage(
             array.data, width, height, width * 3, QImage.Format.Format_BGR888
         ).copy()
+    # RGB32, not ARGB32: same B,G,R,X byte layout, but the fourth byte is
+    # ignored. GDI screen captures usually leave that byte at 0, and ARGB32
+    # honours it -- the screenshot came out fully transparent, so the pickers
+    # showed an empty canvas.
     return QImage(
-        array.data, width, height, width * 4, QImage.Format.Format_ARGB32
+        array.data, width, height, width * 4, QImage.Format.Format_RGB32
     ).copy()
 
 

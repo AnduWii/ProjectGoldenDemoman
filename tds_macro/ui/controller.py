@@ -13,12 +13,16 @@ thread, which SendInput prefers.
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtWidgets import QApplication
 
 from ..config import Settings, SettingsStore
 from ..input.coords import NormPoint, Rect
@@ -30,7 +34,7 @@ from ..strategy.engine import GameState, RunnerDeps, RunStatus, StrategyRunner
 from ..strategy.loop import LoopController, LoopDeps, LoopPhase
 from ..strategy.recorder import Recorder, RecorderOptions
 from ..strategy.steps import Strategy, StrategyError
-from ..vision.calibration import Calibration, CalibrationError
+from ..vision.calibration import TEMPLATE_END_SCREEN, Calibration, CalibrationError
 from ..vision.capture import ScreenCapture
 from ..vision.hud import HudReader, HudSnapshot
 from ..vision.templates import MatchResult, match_template
@@ -64,7 +68,7 @@ class AppController(QObject):
         self.strategy_path: Path | None = None
         self.dirty = False
 
-        self.window = RobloxWindow(self.settings.pinned_hwnd or None)
+        self.window = RobloxWindow()
         self.capture = ScreenCapture()
         self.calibration = Calibration()
         self.hud = HudReader(
@@ -132,6 +136,39 @@ class AppController(QObject):
             self.emit_log("info", f"Calibration saved ({self.calibration.describe()}).")
         except OSError as exc:
             self.emit_log("error", f"Could not save calibration: {exc}")
+
+    def grab_game_frame(self, settle_ms: int = 150) -> tuple[Rect | None, np.ndarray | None]:
+        """Capture the Roblox client area with this app's windows out of the way.
+
+        Screen capture records what is visible, so whenever the main window or
+        the wizard overlapped Roblox, calibration and point-picking captured
+        the app itself instead of the game. Every visible top-level window is
+        made fully transparent for the capture and then restored.
+
+        Transparency rather than hide(): hiding a modal dialog ends its exec()
+        loop, which would close the wizard in the middle of setup.
+        """
+        app = QApplication.instance()
+        windows = (
+            [w for w in app.topLevelWidgets() if w.isVisible()]  # type: ignore[attr-defined]
+            if app is not None
+            else []
+        )
+        previous = [(window, window.windowOpacity()) for window in windows]
+        try:
+            for window, _ in previous:
+                window.setWindowOpacity(0.0)
+            # Give the compositor a few frames to redraw without us.
+            deadline = time.monotonic() + settle_ms / 1000
+            while time.monotonic() < deadline:
+                if app is not None:
+                    app.processEvents()
+                time.sleep(0.01)
+            return self.hud.grab_client_frame()
+        finally:
+            for window, opacity in previous:
+                with contextlib.suppress(RuntimeError):
+                    window.setWindowOpacity(opacity)
 
     def find_template(self, name: str) -> MatchResult:
         """Look for a calibrated screen template in the live client area."""
@@ -224,8 +261,13 @@ class AppController(QObject):
         return sorted(set(keys))
 
     def _make_runner(self, backend: InputBackend) -> StrategyRunner:
+        # A private copy: the editor stays usable during playback, and the
+        # running generator enumerates this list. Handing it the live object
+        # meant dragging or deleting a step mid-run skipped or repeated steps.
+        # In loop mode each new run takes a fresh copy, so edits made between
+        # matches still apply to the next one.
         return StrategyRunner(
-            self.strategy,
+            copy.deepcopy(self.strategy),
             RunnerDeps(
                 backend=backend,
                 state=self.hud,
@@ -291,7 +333,9 @@ class AppController(QObject):
 
         backend = self.make_backend(dry_run)
         self.hud.reset()
-        self.hud.detect_end_screen = self.settings.loop.enabled
+        # Watch for the end screen whenever it has been captured, so a single
+        # run also stops cleanly when the match ends early (base lost).
+        self.hud.detect_end_screen = TEMPLATE_END_SCREEN in self.calibration.templates
         if self.settings.loop.enabled:
             self.loop = LoopController(
                 LoopDeps(
@@ -398,11 +442,42 @@ class AppController(QObject):
             f"Recording stopped: {len(recorded.steps)} step(s) from "
             f"{recorder.stats.events_seen} input event(s).",
         )
-        if save:
-            self.strategy.steps = recorded.steps
-            self.dirty = True
-            self.strategyChanged.emit()
+        if not save:
+            return recorded
+        if not recorded.steps:
+            # An accidental F6-F6 used to replace the open strategy with an
+            # empty one. Nothing recorded means nothing changes.
+            self.emit_log("info", "Nothing was recorded; the open strategy is unchanged.")
+            return recorded
+        backup = self._backup_strategy_if_unsaved()
+        recorded.name = f"Recorded {datetime.now():%Y-%m-%d %H:%M}"
+        self.strategy = recorded
+        # A new, unsaved strategy: Save must not quietly write the recording
+        # over the file the previous strategy came from.
+        self.strategy_path = None
+        self.dirty = True
+        if backup is not None:
+            self.emit_log("info", f"Your previous unsaved strategy was kept at {backup}")
+        self.strategyChanged.emit()
         return recorded
+
+    def _backup_strategy_if_unsaved(self) -> Path | None:
+        """Write the open strategy aside before something replaces it.
+
+        Only when there is something to lose: unsaved changes and at least one
+        step. Returns the backup path, or None if no backup was needed.
+        """
+        if not self.dirty or not self.strategy.steps:
+            return None
+        folder = self.store.strategies_dir()
+        path = folder / f"unsaved-backup-{datetime.now():%Y%m%d-%H%M%S}.json"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            path.write_text(self.strategy.to_json(), encoding="utf-8")
+        except OSError as exc:
+            self.emit_log("error", f"Could not back up the previous strategy: {exc}")
+            return None
+        return path
 
     def toggle_recording(self) -> None:
         if self.recorder is not None:

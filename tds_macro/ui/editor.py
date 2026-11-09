@@ -41,7 +41,9 @@ from ..strategy.steps import (
 )
 from .theme import TEXT_DIM
 
-NO_TIMEOUT_TEXT = "wait forever"
+# 0 on a step defers to Settings > Timing > Default wait timeout, which is
+# itself "wait forever" (0) unless the user changes it.
+USE_DEFAULT_TEXT = "use default"
 
 
 class StepEditor(QWidget):
@@ -208,12 +210,14 @@ class StepEditor(QWidget):
             step.timeout_ms // 1000,
             lambda v: setattr(step, "timeout_ms", v * 1000),
             0,
-            3_600,
+            24 * 3_600,
             " s",
-            "Give up after this long and stop the run. 0 means wait forever -- "
-            "useful once you trust the HUD calibration, risky before then.",
+            "Give up after this long and stop the run. 'use default' follows "
+            "Settings > Timing > Default wait timeout, which waits forever unless "
+            "you change it. The status line shows what the HUD is reading while "
+            "it waits, so a stalled read is visible.",
         )
-        box.setSpecialValueText(NO_TIMEOUT_TEXT)
+        box.setSpecialValueText(USE_DEFAULT_TEXT)
         return box
 
     def _build_specific(self) -> None:

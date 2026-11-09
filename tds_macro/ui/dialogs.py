@@ -250,7 +250,7 @@ class SettingsDialog(QDialog):
             ("place_confirm_ms", "Placement check delay", 0, 30_000,
              "How long to wait before checking whether cash dropped, which is how a "
              "failed placement is detected."),
-            ("place_verify_ms", "Placement check window", 0, 30_000,
+            ("place_verify_ms", "Placement check window", 250, 30_000,
              "How long to keep watching for that drop. The HUD reader needs a few "
              "frames to settle, and giving up too early makes the app retry and place "
              "a second tower."),
@@ -258,8 +258,9 @@ class SettingsDialog(QDialog):
              "Extra attempts when cash did not drop after a placement."),
             ("poll_interval_ms", "Condition poll interval", 10, 5_000,
              "How often to re-read the HUD while waiting for a wave or cash amount."),
-            ("default_timeout_ms", "Default wait timeout (ms)", 0, 3_600_000,
-             "Used by Wait-for steps that do not set their own. 0 means wait forever."),
+            ("default_timeout_ms", "Default wait timeout (ms)", 0, 86_400_000,
+             "Used by Wait-for steps set to 'use default'. 0 (the default) means wait "
+             "forever, since a TDS wave gate is often ten minutes or more away."),
         ]
         for name, label, low, high, tip in fields:
             spin = QSpinBox()
@@ -315,9 +316,22 @@ class SettingsDialog(QDialog):
         self.loop_timeout.setValue(loop.requeue_timeout_ms // 1000)
         self.loop_timeout.setSuffix(" s")
         self.loop_timeout.setToolTip(
-            "How long to wait for an expected screen before giving up and stopping."
+            "How long to wait for each lobby screen (Play Again, the map, Play) "
+            "before giving up and stopping."
         )
-        form.addRow("Screen wait timeout", self.loop_timeout)
+        form.addRow("Lobby screen timeout", self.loop_timeout)
+
+        self.match_timeout = QSpinBox()
+        self.match_timeout.setRange(0, 24 * 60)
+        self.match_timeout.setValue(loop.match_end_timeout_ms // 60_000)
+        self.match_timeout.setSuffix(" min")
+        self.match_timeout.setSpecialValueText("forever")
+        self.match_timeout.setToolTip(
+            "How long the match may keep going after the strategy's last step "
+            "before the loop gives up waiting for the end screen. Strategies "
+            "usually finish many waves before the map does."
+        )
+        form.addRow("Longest match after the last step", self.match_timeout)
 
         self.loop_delay = QSpinBox()
         self.loop_delay.setRange(0, 60_000)
@@ -406,6 +420,7 @@ class SettingsDialog(QDialog):
         settings.loop.runs_target = self.loop_runs.value()
         settings.loop.use_play_again = self.loop_play_again.isChecked()
         settings.loop.requeue_timeout_ms = self.loop_timeout.value() * 1000
+        settings.loop.match_end_timeout_ms = self.match_timeout.value() * 60_000
         settings.loop.between_match_delay_ms = self.loop_delay.value()
         settings.dry_run = self.dry_run.isChecked()
         settings.require_foreground = self.require_foreground.isChecked()

@@ -8,7 +8,7 @@ from conftest import FakeClock, FakeFocus, FakeState, LogCapture
 
 from tds_macro.config import LoopSettings, Timing
 from tds_macro.input.coords import NormPoint
-from tds_macro.input.sendinput import NullBackend
+from tds_macro.input.sendinput import MouseButton, NullBackend
 from tds_macro.strategy.engine import RunnerDeps, StrategyRunner
 from tds_macro.strategy.loop import (
     LobbyStep,
@@ -45,6 +45,7 @@ def build(
     runs_target: int = 2,
     use_play_again: bool = True,
     sequence: list[LobbyStep] | None = None,
+    match_end_timeout_ms: int = 3_600_000,
 ) -> tuple[LoopController, FakeWorld, FakeClock, FakeState, NullBackend, LogCapture]:
     clock = FakeClock()
     backend = NullBackend()
@@ -57,6 +58,7 @@ def build(
         runs_target=runs_target,
         use_play_again=use_play_again,
         requeue_timeout_ms=30_000,
+        match_end_timeout_ms=match_end_timeout_ms,
         between_match_delay_ms=500,
     )
     timing = Timing(jitter_ms=0)
@@ -93,6 +95,7 @@ def build(
 
 
 def drive(controller: LoopController, clock: FakeClock, ms: int, tick_ms: int = 50) -> None:
+    """Tick the controller for ``ms`` of simulated time."""
     for _ in range(ms // tick_ms):
         if not controller.phase.is_active:
             return
@@ -157,14 +160,86 @@ def test_falls_back_to_the_map_picker_when_play_again_is_not_offered() -> None:
 
 
 def test_missing_end_screen_template_fails_with_an_actionable_message() -> None:
+    controller, world, clock, state, _, _ = build(runs_target=1, match_end_timeout_ms=60_000)
+    controller.start()
+    drive(controller, clock, 3_000)
+    assert controller.phase is LoopPhase.WAITING_END
+
+    drive(controller, clock, 90_000)  # end screen never appears
+    assert controller.phase is LoopPhase.FAILED
+    assert "calibration wizard" in controller.failure_reason
+    assert "Longest match after the last step" in controller.failure_reason
+
+
+def test_the_match_may_outlast_the_lobby_timeout_after_the_strategy_ends() -> None:
+    """The strategy usually finishes many waves before the map does. Waiting
+    for the end screen used the 30 s lobby timeout and failed the loop on
+    nearly every real match."""
     controller, world, clock, state, _, _ = build(runs_target=1)
     controller.start()
     drive(controller, clock, 3_000)
     assert controller.phase is LoopPhase.WAITING_END
 
-    drive(controller, clock, 60_000)  # end screen never appears
-    assert controller.phase is LoopPhase.FAILED
-    assert "calibration wizard" in controller.failure_reason
+    drive(controller, clock, 20 * 60 * 1000, tick_ms=1_000)  # a 20-minute remainder
+    assert controller.phase is LoopPhase.WAITING_END, controller.failure_reason
+
+    world.visible = {TEMPLATE_END_SCREEN}
+    state.wave = None
+    drive(controller, clock, 3_000)
+    assert controller.phase is LoopPhase.REQUEUEING
+
+
+def test_a_lost_match_requeues_instead_of_failing_the_loop() -> None:
+    """Base dies while the strategy is still waiting for a later wave."""
+    controller, world, clock, state, _, logs = build(runs_target=2)
+    controller.start()
+    # Swap in a strategy that waits for a wave this match never reaches.
+    from tds_macro.strategy.steps import WaitForWave
+
+    assert controller.runner is not None
+    controller.runner.strategy.steps.insert(0, WaitForWave(wave=30))
+    controller.runner.start()
+    drive(controller, clock, 2_000)
+    assert controller.runner.status.is_active
+
+    state.end_screen = True  # the base was destroyed
+    world.visible = {TEMPLATE_END_SCREEN}
+    drive(controller, clock, 3_000)
+    assert controller.phase is LoopPhase.REQUEUEING, controller.describe()
+    assert controller.runs_failed == 0
+    assert "ended before the strategy did" in logs.text()
+
+
+def test_losing_focus_mid_lobby_click_releases_the_button_and_retries() -> None:
+    """A mouse_down already sent for Play Again stayed held while the user was
+    in another app, so their next mouse movement there dragged."""
+    controller, world, clock, state, backend, logs = build(runs_target=1)
+    controller.start()
+    drive(controller, clock, 3_000)
+    world.visible = {TEMPLATE_END_SCREEN}
+    state.wave = None
+    drive(controller, clock, 3_000)
+    assert controller.phase is LoopPhase.REQUEUEING
+
+    world.visible = {TEMPLATE_PLAY_AGAIN}
+    # Tick until the click is half-sent: the button is down, the release pending.
+    for _ in range(400):
+        controller.tick()
+        clock.advance(5)
+        if MouseButton.LEFT in backend.held_buttons:
+            break
+    assert MouseButton.LEFT in backend.held_buttons, backend.trace()
+
+    controller.deps.focus.foreground = False
+    controller.tick()
+    assert backend.held_buttons == set(), "focus loss must release the held button"
+    assert "will be retried" in logs.text()
+
+    controller.deps.focus.foreground = True
+    downs_before = backend.trace().count("mouse down left")
+    drive(controller, clock, 3_000)
+    assert backend.trace().count("mouse down left") == downs_before + 1, "the click is retried"
+    assert controller.phase is LoopPhase.WAITING_MATCH
 
 
 def test_a_required_lobby_button_that_never_appears_fails_loudly() -> None:

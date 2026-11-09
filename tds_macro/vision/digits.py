@@ -23,9 +23,8 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 GLYPH_SIZE = (16, 12)  # (height, width) every glyph is normalized to
-# Labels that are read but contribute no digits.  Separators are matched so a
-# stray comma cannot be mistaken for a 1.
-IGNORED_LABELS = frozenset({",", ".", "$", "/", " "})
+# A readout like "12/40" is current/total: the value is what comes before it.
+RATIO_SEPARATOR = "/"
 
 
 @dataclass(frozen=True)
@@ -323,10 +322,22 @@ def read_number(
         labels.append(label)
 
     text = "".join(labels)
-    digits = "".join(ch for ch in text if ch.isdigit())
+    digits = parse_readout(text)
     if not digits:
         return ReadResult(None, text, worst, glyphs=len(boxes), reason="no digits recognised")
     return ReadResult(int(digits), text, worst, glyphs=len(boxes))
+
+
+def parse_readout(text: str) -> str:
+    """The digits of a readout's value, as a string ("" if there are none).
+
+    "$1,250" -> "1250": currency signs and thousands separators are dropped.
+    "12/40" -> "12": only the part before a ratio separator is the value.
+    Joining every digit instead turned wave 12 of 40 into wave 1240, which
+    satisfied every WaitForWave at once and ran the whole strategy immediately.
+    """
+    value = text.split(RATIO_SEPARATOR, 1)[0]
+    return "".join(ch for ch in value if ch.isdigit())
 
 
 @dataclass(frozen=True)

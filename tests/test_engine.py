@@ -444,3 +444,125 @@ def test_placement_still_gives_up_when_the_drop_never_arrives() -> None:
     assert runner.placements_retried == 1
     assert runner.placements_failed == 1
     assert backend.trace().count("mouse up left") == 2
+
+
+# --- timeout semantics ------------------------------------------------------------
+def test_a_step_timeout_of_zero_uses_the_default_which_waits_forever() -> None:
+    """The editor labelled 0 'wait forever' but the engine aborted at 180 s,
+    which killed any wave gate more than three minutes away."""
+    state = FakeState(wave=1)
+    runner, _, clock, game, logs, _ = build([WaitForWave(wave=15, timeout_ms=0)], state=state)
+    runner.start()
+    for _ in range(60):  # 30 simulated minutes
+        clock.advance(30_000)
+        runner.tick()
+    assert runner.status is RunStatus.WAITING, logs.text()
+    game.wave = 15
+    pump(runner, clock)
+    assert runner.status is RunStatus.COMPLETED
+
+
+def test_a_step_timeout_of_zero_follows_a_user_chosen_default() -> None:
+    runner, _, clock, _, _, _ = build(
+        [WaitForCash(amount=10_000, timeout_ms=0)],
+        state=FakeState(cash=5),
+        timing=Timing(jitter_ms=0, default_timeout_ms=4_000),
+    )
+    runner.start()
+    pump(runner, clock)
+    assert runner.status is RunStatus.FAILED
+    assert "within 4s" in runner.failure_reason
+
+
+def test_an_explicit_step_timeout_still_wins() -> None:
+    runner, _, clock, _, _, _ = build(
+        [WaitForWave(wave=99, timeout_ms=2_000)],
+        state=FakeState(wave=1),
+        timing=Timing(jitter_ms=0, default_timeout_ms=0),
+    )
+    runner.start()
+    pump(runner, clock)
+    assert runner.status is RunStatus.FAILED
+
+
+# --- the match ending before the strategy -------------------------------------------
+def test_the_end_screen_finishes_the_run_instead_of_waiting_out_a_timeout() -> None:
+    state = FakeState(wave=12)
+    runner, backend, clock, game, logs, _ = build(
+        [WaitForWave(wave=30), SkipWave()], state=state
+    )
+    runner.start()
+    for _ in range(5):
+        runner.tick()
+        clock.advance(200)
+    assert runner.status is RunStatus.WAITING
+
+    game.end_screen = True
+    runner.tick()
+    assert runner.status is RunStatus.COMPLETED
+    assert runner.match_ended_early is True
+    assert "The match ended at step 1" in logs.text()
+    assert "key down g" not in backend.trace(), "no input after the match is over"
+
+
+# --- placement confirmation under income ---------------------------------------------
+def test_income_landing_before_the_purchase_shows_does_not_cause_a_retry() -> None:
+    """$1000, buy for $300, earn $400: cash never reads below $1000. Comparing
+    against the pre-click figure retried and bought a second tower."""
+    state = FakeState(cash=1_000)
+    runner, backend, clock, game, logs, _ = build(
+        [Place(slot=1, position=NormPoint(0.5, 0.5), tower_id="T1")],
+        state=state,
+        timing=Timing(jitter_ms=0, place_confirm_ms=100, place_verify_ms=3_000),
+    )
+    clicked_at: dict[str, int] = {}
+
+    def on_intent(intent) -> None:
+        if intent.kind == "mouse_up":
+            clicked_at.setdefault("t", clock.value)
+
+    # What the HUD publishes over time after the click: income arrives first,
+    # then the purchase shows, then more income.
+    schedule = [(0, 1_250), (300, 1_400), (600, 1_100), (900, 1_150)]
+
+    def by_time(fake: FakeState) -> None:
+        if "t" not in clicked_at:
+            return
+        elapsed = clock.value - clicked_at["t"]
+        for start, value in schedule:
+            if elapsed >= start:
+                fake.cash = value
+
+    backend.on_intent = on_intent
+    game.on_snapshot = by_time
+    runner.start()
+    pump(runner, clock)
+
+    assert runner.placements_retried == 0, logs.text()
+    assert backend.trace().count("mouse up left") == 1, "the tower was placed twice"
+    assert "Placed T1 (cash $1,400 -> $1,100)" in logs.text()
+
+
+def test_cash_drop_watcher_tracks_the_peak() -> None:
+    from tds_macro.strategy.engine import CashDropWatcher, GameState
+
+    watch = CashDropWatcher(1_000)
+    assert watch(GameState(cash=None)) is False
+    assert watch(GameState(cash=1_200)) is False
+    assert watch(GameState(cash=1_300)) is False
+    assert watch(GameState(cash=1_250)) is True
+    assert (watch.peak, watch.low) == (1_300, 1_250)
+
+
+def test_a_zero_placement_window_is_clamped_so_a_failed_place_cannot_hang() -> None:
+    """An AwaitState timeout of 0 means 'no deadline'."""
+    assert Timing(place_verify_ms=0).clamped().place_verify_ms == 250
+    runner, _, clock, _, _, _ = build(
+        [Place(slot=1, position=NormPoint(0.5, 0.5), tower_id="T1")],
+        state=FakeState(cash=500),
+        timing=Timing(jitter_ms=0, place_verify_ms=0, place_retries=0),
+    )
+    runner.start()
+    pump(runner, clock, limit_ms=60_000)
+    assert runner.status is RunStatus.COMPLETED
+    assert runner.placements_failed == 1

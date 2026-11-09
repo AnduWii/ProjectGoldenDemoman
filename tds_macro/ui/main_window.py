@@ -462,7 +462,7 @@ class MainWindow(QMainWindow):
         self._refresh_summary()
 
     def _pick_position(self) -> None:
-        client, frame = self.controller.hud.grab_client_frame()
+        client, frame = self.controller.grab_game_frame()
         if client is None or frame is None:
             QMessageBox.warning(
                 self,
@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
             self.editor.update_position(dialog.result_point)
 
     def _preview_points(self) -> None:
-        client, frame = self.controller.hud.grab_client_frame()
+        client, frame = self.controller.grab_game_frame()
         if client is None or frame is None:
             QMessageBox.warning(
                 self, "No screenshot", "Could not capture the Roblox window."
@@ -540,7 +540,7 @@ class MainWindow(QMainWindow):
         self.controller.apply_hotkeys()
 
     def _pick_menu_point(self) -> NormPoint | None:
-        client, frame = self.controller.hud.grab_client_frame()
+        client, frame = self.controller.grab_game_frame()
         if client is None or frame is None:
             QMessageBox.warning(self, "No screenshot", "Could not capture the Roblox window.")
             return None

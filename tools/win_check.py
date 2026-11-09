@@ -151,7 +151,8 @@ def check_windows(report: Report) -> None:
         )
     else:
         report.ok("Roblox window", f"{match.window.describe()} (score {match.score})")
-        roblox = RobloxWindow(match.window.hwnd)
+        roblox = RobloxWindow()
+        roblox.pin(match.window.hwnd)
         rect = roblox.client_rect()
         if rect is None:
             report.fail("client rect", roblox.last_error or "unavailable")
