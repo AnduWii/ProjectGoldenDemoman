@@ -7,9 +7,9 @@ well it does on real TDS footage can only be learned from real footage.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
 from video_fixture import (
@@ -38,6 +38,7 @@ from tds_macro.vision.video import (
     analyze_video,
     build_strategy,
     read_frame_at,
+    write_video,
 )
 
 
@@ -142,16 +143,17 @@ def test_prices_that_differ_by_income_are_one_tower() -> None:
 def test_a_letterboxed_video_is_read_inside_its_game_area(tmp_path: Path) -> None:
     """YouTube uploads often frame the game with black bars."""
     pad_x, pad_y = 80, 45
-    path = tmp_path / "letterboxed.mp4"
     out_w, out_h = WIDTH + 2 * pad_x, HEIGHT + 2 * pad_y
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), FPS, (out_w, out_h))
     background = _background()
-    for index in range(int(20 * FPS)):
-        canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-        game = render_frame(index / FPS, background)
-        canvas[pad_y : pad_y + HEIGHT, pad_x : pad_x + WIDTH] = game
-        writer.write(canvas)
-    writer.release()
+
+    def frames() -> Iterator[np.ndarray]:
+        for index in range(int(20 * FPS)):
+            canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+            game = render_frame(index / FPS, background)
+            canvas[pad_y : pad_y + HEIGHT, pad_x : pad_x + WIDTH] = game
+            yield canvas
+
+    path = write_video(tmp_path / "letterboxed.mp4", FPS, (out_w, out_h), frames)
 
     box = NormBox(pad_x / out_w, pad_y / out_h, WIDTH / out_w, HEIGHT / out_h)
     result = analyze_video(path, match_calibration(), VideoSettings(sample_fps=4, game_box=box))
@@ -197,3 +199,40 @@ def test_frames_can_be_fetched_for_preview(match_video: Path) -> None:
     assert frame.shape[:2] == (HEIGHT, WIDTH)
     with pytest.raises(VideoError):
         read_frame_at(match_video.with_name("missing.mp4"), 1.0)
+
+
+def test_video_writing_falls_back_when_a_format_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Some Mac OpenCV builds have no FFmpeg and cannot write MPEG-4 or AVI."""
+    import tds_macro.vision.video as video
+
+    monkeypatch.setattr(video, "WRITE_FORMATS", (("XXXX", ".nope"), *video.WRITE_FORMATS))
+
+    def frames() -> Iterator[np.ndarray]:
+        for value in range(0, 250, 25):
+            yield np.full((48, 64, 3), value, dtype=np.uint8)
+
+    path = write_video(tmp_path / "clip", 10, (64, 48), frames)
+    assert path.suffix != ".nope" and path.exists()
+    assert not (tmp_path / "clip.nope").exists()
+
+
+def test_a_build_that_cannot_write_video_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tds_macro.vision.video as video
+
+    monkeypatch.setattr(video, "WRITE_FORMATS", (("XXXX", ".nope"),))
+    with pytest.raises(VideoError, match="cannot write and re-read video"):
+        write_video(tmp_path / "clip", 10, (64, 48), lambda: iter([]))
+    ok, detail = video.check_video_support(tmp_path)
+    assert not ok and "decoders" in detail
+
+
+def test_the_self_test_video_check_passes_here(tmp_path: Path) -> None:
+    from tds_macro.vision.video import check_video_support
+
+    ok, detail = check_video_support(tmp_path)
+    assert ok, detail
+    assert list(tmp_path.iterdir()) == [], "the self-test must clean up after itself"

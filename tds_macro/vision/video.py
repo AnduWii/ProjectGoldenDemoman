@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -181,39 +181,86 @@ class VideoAnalysis:
 
 
 # --- reading the video ---------------------------------------------------------------
+# Formats tried, in order, for video the app writes itself (the self-test, and
+# the synthetic matches in the tests). OpenCV builds differ: most bundle FFmpeg
+# (MPEG-4 and Motion-JPEG); some Mac builds have only Apple's AVFoundation,
+# which writes H.264 or JPEG into MP4/MOV and nothing else.
+WRITE_FORMATS = (("mp4v", ".mp4"), ("avc1", ".mp4"), ("MJPG", ".avi"), ("jpeg", ".mov"))
+
+
+def video_backends() -> str:
+    """The decoders this OpenCV build can read files with, for diagnostics."""
+    try:
+        names = [
+            cv2.videoio_registry.getBackendName(b)
+            for b in cv2.videoio_registry.getStreamBackends()
+        ]
+    except (AttributeError, cv2.error):  # pragma: no cover - very old OpenCV
+        return "unknown"
+    return ", ".join(names) or "none"
+
+
+def count_frames(path: Path) -> int:
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            return 0
+        frames = 0
+        while capture.grab():
+            frames += 1
+        return frames
+    finally:
+        capture.release()
+
+
+def write_video(
+    stem: Path, fps: float, size: tuple[int, int], frames: Callable[[], Iterable[np.ndarray]]
+) -> Path:
+    """Write ``frames()`` in the first format this OpenCV build can write *and*
+    read back. ``stem``'s suffix is replaced by the format's. Raises VideoError
+    if no format round-trips."""
+    tried = []
+    for fourcc, suffix in WRITE_FORMATS:
+        path = Path(stem).with_suffix(suffix)
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*fourcc), fps, size)
+        written = 0
+        if writer.isOpened():
+            for frame in frames():
+                writer.write(frame)
+                written += 1
+        writer.release()
+        if written and count_frames(path) >= written // 2:
+            return path
+        path.unlink(missing_ok=True)
+        tried.append(f"{fourcc}{suffix}")
+    raise VideoError(
+        f"this OpenCV build cannot write and re-read video (tried {', '.join(tried)}; "
+        f"decoders: {video_backends()})"
+    )
+
+
 def check_video_support(folder: Path) -> tuple[bool, str]:
     """Write a few frames and decode them back.
 
     Proves the bundled OpenCV can actually read video files -- a packaged app
-    can import cv2 fine and still lack the decoder. Used by ``--self-test``.
+    can import cv2 fine and still lack a decoder. Used by ``--self-test``.
     """
-    try:
-        backends = ", ".join(
-            cv2.videoio_registry.getBackendName(b) for b in cv2.videoio_registry.getStreamBackends()
-        )
-    except (AttributeError, cv2.error):  # pragma: no cover - very old OpenCV
-        backends = "unknown"
-    path = Path(folder) / "video-self-test.avi"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"MJPG"), 10, (64, 48))
-        if not writer.isOpened():
-            return False, f"cannot write a test video (backends: {backends})"
+
+    def gradient() -> Iterable[np.ndarray]:
         for value in range(0, 250, 25):
-            writer.write(np.full((48, 64, 3), value, dtype=np.uint8))
-        writer.release()
-        capture, info = open_video(path)
-        frames = 0
-        while capture.grab():
-            frames += 1
-        capture.release()
+            yield np.full((48, 64, 3), value, dtype=np.uint8)
+
+    try:
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        path = write_video(Path(folder) / "video-self-test", 10, (64, 48), gradient)
     except (OSError, VideoError, cv2.error) as exc:
-        return False, f"{exc} (backends: {backends})"
+        return False, str(exc)
+    try:
+        frames = count_frames(path)
     finally:
         path.unlink(missing_ok=True)
-    if frames < 5:
-        return False, f"decoded only {frames} of 10 frames (backends: {backends})"
-    return True, f"available ({info.width}x{info.height}, {frames} frames; backends: {backends})"
+    return True, f"available ({path.suffix}, {frames} frames; decoders: {video_backends()})"
+
 
 def open_video(path: Path) -> tuple[cv2.VideoCapture, VideoInfo]:
     capture = cv2.VideoCapture(str(path))

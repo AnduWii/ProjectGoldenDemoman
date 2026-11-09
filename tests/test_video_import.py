@@ -81,7 +81,7 @@ def test_choosing_a_video_shows_a_frame_and_says_what_is_missing(
     assert dialog.load_video(match_video)
     assert dialog.info is not None and dialog.frame is not None
     assert dialog.analyze_button.isEnabled()
-    assert "match.mp4" in dialog.file_label.text()
+    assert match_video.name in dialog.file_label.text()
     # A fresh install has no wave/cash reading: the window says what to do
     # rather than failing later.
     assert "Teach" in dialog.hud_label.text()

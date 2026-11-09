@@ -304,7 +304,9 @@ something was bought. The size of the drop is the price; what appeared on the
 map at that moment is where; a drop next to an existing tower is an upgrade.
 Towers that cost the same are taken to be the same tower.
 
-1. **Choose video...** Most formats work (`.mp4`, `.mov`, `.mkv`, `.webm`, ...).
+1. **Choose video...** MP4 and MOV work everywhere; MKV, WebM and AVI work on
+   most computers. If a file will not open, convert it to MP4 (H.264) — for
+   example with QuickTime's **File → Export** or VLC's **Convert/Save**.
 2. If the video has black bars, a webcam or an overlay, **Mark the game
    area...** around just the game.
 3. The app needs to read this video's wave and cash numbers. If your own wave &

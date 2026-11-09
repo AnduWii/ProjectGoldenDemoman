@@ -8,6 +8,7 @@ it cannot do is look like TDS -- it proves the pipeline, not TDS realism.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from test_digits import FONT, trained_classifier
 from tds_macro.input.coords import NormPoint
 from tds_macro.vision.calibration import Calibration
 from tds_macro.vision.capture import NormBox
+from tds_macro.vision.video import write_video
 
 WIDTH, HEIGHT, FPS = 640, 360, 10
 SCALE = 3
@@ -104,13 +106,15 @@ def render_frame(t: float, background: np.ndarray) -> np.ndarray:
 
 
 def write_match_video(path: Path) -> Path:
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), FPS, (WIDTH, HEIGHT))
-    assert writer.isOpened(), "OpenCV could not create the test video"
+    """Write the synthetic match; returns the file actually written, whose
+    extension depends on which formats this OpenCV build can write."""
     background = _background()
-    for index in range(int(DURATION * FPS)):
-        writer.write(render_frame(index / FPS, background))
-    writer.release()
-    return path
+
+    def frames() -> Iterator[np.ndarray]:
+        for index in range(int(DURATION * FPS)):
+            yield render_frame(index / FPS, background)
+
+    return write_video(path, FPS, (WIDTH, HEIGHT), frames)
 
 
 def match_calibration() -> Calibration:
