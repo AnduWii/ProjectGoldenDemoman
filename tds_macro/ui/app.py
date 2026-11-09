@@ -18,28 +18,61 @@ import sys
 import traceback
 from pathlib import Path
 from types import TracebackType
+from typing import TextIO
 
 from ..config import SettingsStore
 from ..input.window import set_dpi_awareness
 
 log = logging.getLogger("tds_macro")
 
+# Kept open for the life of the process: faulthandler writes to the raw file
+# descriptor when the interpreter is already crashing, so it must not be closed
+# or garbage collected.
+_crash_log: TextIO | None = None
+
 
 def configure_logging(folder: Path, to_file: bool, verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    handlers: list[logging.Handler] = []
+    # The windowed exe has no console: PyInstaller sets sys.stderr to None, and
+    # a StreamHandler pointed at None fails on every log call.
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler(sys.stderr))
     if to_file:
         try:
             folder.mkdir(parents=True, exist_ok=True)
             handlers.append(logging.FileHandler(folder / "tds_macro.log", encoding="utf-8"))
         except OSError as exc:  # pragma: no cover - depends on the filesystem
-            print(f"could not open log file: {exc}", file=sys.stderr)
+            if sys.stderr is not None:
+                print(f"could not open log file: {exc}", file=sys.stderr)
+    if not handlers:
+        handlers.append(logging.NullHandler())
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         handlers=handlers,
         force=True,
     )
+
+
+def enable_crash_reports(folder: Path) -> None:
+    """Turn on faulthandler without assuming a console exists.
+
+    ``faulthandler.enable()`` writes to sys.stderr by default, and in the
+    windowed exe sys.stderr is None -- the call raises RuntimeError and the app
+    dies before showing a window. Native crashes go to crash.log beside the
+    settings instead, which is also where a user can find them.
+    """
+    global _crash_log
+    if sys.stderr is not None:
+        faulthandler.enable()
+        return
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        _crash_log = open(folder / "crash.log", "a", encoding="utf-8")  # noqa: SIM115
+        faulthandler.enable(file=_crash_log)
+    except (OSError, RuntimeError) as exc:  # pragma: no cover - filesystem dependent
+        log.warning("crash reports disabled: %s", exc)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -115,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = store.load()
     configure_logging(store.folder, settings.log_to_file, args.verbose)
     log.info("TDS Macro starting; DPI mode: %s", dpi_mode)
-    faulthandler.enable()
+    enable_crash_reports(store.folder)
 
     from PySide6.QtWidgets import QApplication
 

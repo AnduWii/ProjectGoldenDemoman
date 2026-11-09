@@ -88,6 +88,30 @@ jobs:
       - name: Build the bundle
         run: python build/build.py
 
+      # Launch the frozen exe itself, not the source. Building was never proof
+      # that it runs: the first release built cleanly and died on start-up
+      # (a relative import in the entry script, then a missing shiboken6
+      # module). It is a GUI-subsystem exe, so PowerShell would return
+      # immediately -- Start-Process -Wait makes it block and report the code.
+      - name: Launch the built exe
+        shell: pwsh
+        run: |
+          $cfg = Join-Path $env:RUNNER_TEMP "exe-cfg"
+          $exe = "build/dist/TDSMacro/TDSMacro.exe"
+          $arguments = @("--self-test", "4000", "--no-wizard", "--dry-run", "--settings-dir", $cfg)
+          $p = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
+          Write-Host "TDSMacro.exe exit code: $($p.ExitCode)"
+          foreach ($name in @("tds_macro.log", "crash.log")) {
+            $path = Join-Path $cfg $name
+            if (Test-Path $path) { Write-Host "--- $name ---"; Get-Content $path }
+          }
+          if ($p.ExitCode -ne 0) { throw "TDSMacro.exe exited with code $($p.ExitCode)" }
+          $log = Join-Path $cfg "tds_macro.log"
+          if (-not (Test-Path $log)) { throw "the exe never wrote its log" }
+          if (-not (Select-String -Path $log -Pattern "controller shut down cleanly" -Quiet)) {
+            throw "the exe did not shut down cleanly"
+          }
+
       - name: Upload the build
         uses: actions/upload-artifact@v4
         with:

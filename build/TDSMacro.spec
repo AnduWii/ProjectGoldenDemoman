@@ -61,7 +61,8 @@ EXCLUDES = [
     "PySide6.QtSvgWidgets",
     "PySide6.QtOpenGL",
     "PySide6.QtOpenGLWidgets",
-    "shiboken6.Shiboken",
+    # Never exclude shiboken6.Shiboken: PySide6/__init__.py imports it
+    # unconditionally, and without it the frozen app cannot import Qt at all.
     "tkinter",
     "matplotlib",
     "scipy",
