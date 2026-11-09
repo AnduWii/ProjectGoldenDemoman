@@ -498,3 +498,23 @@ def test_the_video_import_window_opens_from_the_main_window(window: MainWindow) 
     dialog = VideoImportDialog(window.controller, window)
     assert dialog.pages.currentIndex() == 0
     dialog.deleteLater()
+
+
+def test_nothing_open_never_looks_like_a_recording_is_chosen(
+    window: MainWindow, controller: AppController
+) -> None:
+    """Files saved in the same instant sort in any order; whichever comes
+    first must not appear chosen while nothing is actually open."""
+    folder = controller.store.strategies_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "only.json").write_text(
+        Strategy(name="only", steps=[WaitForWave(wave=2)]).to_json(), encoding="utf-8"
+    )
+    window.simple.refresh_recordings()
+    combo = window.simple.recordings
+    assert combo.currentText() == "Choose a recording..."
+    combo.setCurrentIndex(combo.findText("only"))
+    assert controller.strategy.name == "only"
+    window.simple.refresh_recordings()
+    assert combo.currentText() == "only"
+    assert combo.findText("Choose a recording...") < 0

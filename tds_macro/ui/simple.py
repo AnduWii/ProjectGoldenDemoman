@@ -216,6 +216,11 @@ class SimplePanel(QWidget):
             elif self.controller.strategy.steps:
                 self.recordings.insertItem(0, f"{self.controller.strategy.name} (unsaved)", "")
                 self.recordings.setCurrentIndex(0)
+            elif self.recordings.count():
+                # Nothing is open. Without this the first file would *look*
+                # chosen, and picking it would not load it (no change).
+                self.recordings.insertItem(0, "Choose a recording...", "")
+                self.recordings.setCurrentIndex(0)
             if self.recordings.count() == 0:
                 self.recordings.addItem("No recordings yet -- press Record", "")
         finally:
